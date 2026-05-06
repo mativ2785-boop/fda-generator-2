@@ -1,7 +1,7 @@
 """
 classifier.py  —  ISA FDA Generator · Bahia Blanca
-Detecta qué es cada PDF leyendo su contenido (no el nombre).
-ZIPs con PDFs siempre en la raíz (sin subcarpetas).
+Detecta qué es cada PDF por contenido + nombre como fallback.
+Soporta SOFs escaneados (sin texto extraíble).
 """
 
 import os, re, zipfile
@@ -13,7 +13,6 @@ import fitz  # PyMuPDF
 # ══════════════════════════════════════════════════════════════════════════════
 
 def read_text(pdf_path, max_pages=3):
-    """Devuelve texto concatenado de las primeras N páginas."""
     try:
         doc = fitz.open(pdf_path)
         n   = min(doc.page_count, max_pages)
@@ -23,7 +22,6 @@ def read_text(pdf_path, max_pages=3):
 
 
 def read_page(pdf_path, idx):
-    """Devuelve texto de una página específica (0-based)."""
     try:
         doc = fitz.open(pdf_path)
         if idx >= doc.page_count:
@@ -41,7 +39,6 @@ def page_count(pdf_path):
 
 
 def is_image_page(pdf_path, idx):
-    """True si la página tiene imagen pero casi sin texto (ej: scan de mooring)."""
     try:
         doc  = fitz.open(pdf_path)
         page = doc[idx]
@@ -51,7 +48,7 @@ def is_image_page(pdf_path, idx):
 
 
 def extract_zip(zip_path, dest_dir):
-    """Extrae los PDFs del ZIP (siempre en raíz) al directorio destino."""
+    """Extrae los PDFs del ZIP al directorio destino."""
     os.makedirs(dest_dir, exist_ok=True)
     with zipfile.ZipFile(zip_path, "r") as z:
         for member in z.namelist():
@@ -65,39 +62,74 @@ def extract_zip(zip_path, dest_dir):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  CLASIFICADOR DE DOCUMENTOS (nivel PDF completo)
+#  CLASIFICADOR DE DOCUMENTOS
+#  Estrategia: contenido primero, nombre como fallback
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Cada tipo: lista de strings que deben aparecer en las primeras páginas
-DOC_TYPES = [
-    # Orden importa: más específico primero
+# Detección por contenido (texto del PDF)
+DOC_TYPES_CONTENT = [
     ("sof",           ["DETAILS OF DAILY WORKING"]),
     ("sof",           ["Standard Statement on Fact"]),
     ("sof",           ["Statement of Facts"]),
+    ("sof",           ["Exceeding expectations", "VESSEL"]),  # SOF con logo ISA
     ("bna",           ["Cotizaciones históricas", "Dolar U.S.A"]),
     ("bna",           ["Banco de la Naci", "Cotizaciones"]),
-    # FACB ISA: chequeo doble para evitar falsos positivos
-    ("facb_isa",      ["INDEPENDENT SHIP AGENTS", "FACTURA", "INVOICE"]),
-    ("facb_isa",      ["INDEPENDENT SHIP AGENTS", "B00003"]),
+    ("bna",           ["Dolar U.S.A", "Compra", "Venta", "Fecha"]),
+    ("facb_isa",      ["B00003", "INDEPENDENT SHIP AGENTS"]),
+
+    ("facb_isa",      ["B00003", "AGENCY FEE"]),
+    ("facb_isa",      ["B00003", "PORT DUES"]),
     ("consorcio",     ["Consorcio de Gestión del Puerto de Bahia Blanca"]),
     ("consorcio",     ["CONSORCIO DE GESTION DEL PUERTO DE BAHIA BLANCA"]),
+    ("consorcio",     ["USO DE PUERTO ULTRAMAR"]),
+    ("consorcio",     ["Uso de Vía Navegable", "IMPORTE"]),
     ("donmar",        ["DONMAR S.A."]),
+    ("donmar",        ["Practicaje Ultramar", "BOYA 11"]),
+    ("donmar",        ["Servicio de Practicaje", "Ingeniero White"]),
     ("puerto_mariel", ["PUERTO MARIEL"]),
     ("puerto_mariel", ["ARGENTINA TOWAGE"]),
+    ("puerto_mariel", ["Towage Service", "COOPOR"]),
     ("maritime",      ["MARITIME SHIPPING AGENCY"]),
+    ("maritime",      ["SUCURSAL: Bahía Blanca", "FACT CRED ELECT"]),
     ("amarradores",   ["AMARRADORES DEL PUERTO DE BAHIA BLANCA"]),
     ("ammoca",        ["AMMOCA S.A."]),
     ("centro_nav",    ["Centro de Navegación Asociación Civil"]),
     ("centro_nav",    ["cnav.org.ar"]),
 ]
 
+# Detección por nombre de archivo (fallback cuando el PDF es imagen/escaneado)
+DOC_TYPES_NAME = [
+    ("sof",           ["SOF", "Statement"]),
+    ("bna",           ["Banco", "BNA", "Naci"]),
+    ("facb_isa",      ["FACB"]),
+    ("consorcio",     ["CONSORCIO", "PUERTO DE BAHIA"]),
+    ("donmar",        ["DONMAR"]),
+    ("puerto_mariel", ["MARIEL", "TOWAGE"]),
+    ("maritime",      ["MARITIME"]),
+    ("amarradores",   ["AMARRADORES"]),
+    ("ammoca",        ["AMMOCA"]),
+    ("centro_nav",    ["NAVEGACION", "CNAV"]),
+]
+
 
 def classify_doc(pdf_path):
-    """Devuelve el tipo del documento o 'unknown'."""
-    text = read_text(pdf_path, max_pages=3)
-    for (dtype, keywords) in DOC_TYPES:
-        if all(kw in text for kw in keywords):
+    """
+    Clasifica el PDF. Primero por contenido, luego por nombre si no hay texto.
+    """
+    fname = os.path.basename(pdf_path).upper()
+    text  = read_text(pdf_path, max_pages=3)
+
+    # ── Por contenido ─────────────────────────────────────────────────────────
+    if text.strip():
+        for (dtype, keywords) in DOC_TYPES_CONTENT:
+            if all(kw in text for kw in keywords):
+                return dtype
+
+    # ── Por nombre (fallback para PDFs escaneados sin texto) ──────────────────
+    for (dtype, keywords) in DOC_TYPES_NAME:
+        if any(kw in fname for kw in keywords):
             return dtype
+
     return "unknown"
 
 
@@ -105,8 +137,6 @@ def classify_doc(pdf_path):
 #  CLASIFICADOR DE PÁGINAS DE MARITIME
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Reglas: (categoría, [keywords requeridos])
-# Se evalúan en orden — primera que matchea gana
 MARITIME_PAGE_RULES = [
     ("skip",              ["FACT CRED ELECT"]),
     ("skip",              ["MiPyME"]),
@@ -139,7 +169,6 @@ MARITIME_PAGE_RULES = [
     ("pest_pag",          ["AMMOCA"]),
 ]
 
-# Mapa: categoría de página → voucher destino
 PAGE_TO_VOUCHER = {
     "headclerk_break":   "HEADCLERK COMPULSORY SERVICES",
     "headclerk_liq":     "HEADCLERK COMPULSORY SERVICES",
@@ -167,31 +196,24 @@ PAGE_TO_VOUCHER = {
 
 
 def classify_maritime_pages(pdf_path):
-    """
-    Analiza cada página de un PDF de Maritime.
-    Devuelve lista de dicts: [{page, category, voucher}]
-    """
     n      = page_count(pdf_path)
     result = []
-    seen_lman = set()   # evitar duplicar AFIP LMAN con misma referencia
+    seen_lman = set()
 
     for i in range(n):
         text = read_page(pdf_path, i)
 
-        # Imagen pura → mooring scan
         if is_image_page(pdf_path, i):
             result.append({"page": i, "category": "mooring_img",
                            "voucher": "MOORING & UNMOORING SERVICES"})
             continue
 
-        # Aplicar reglas
         cat = "unknown"
         for (category, keywords) in MARITIME_PAGE_RULES:
             if all(kw in text for kw in keywords):
                 cat = category
                 break
 
-        # Deduplicar AFIP LMAN por referencia
         if cat == "afip_lman":
             m   = re.search(r"LMAN(\w+)", text)
             ref = m.group(1) if m else f"p{i}"
@@ -211,7 +233,6 @@ def classify_maritime_pages(pdf_path):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def extract_facb(pdf_path):
-    """Extrae número, TC, monto, tipo, cliente y buque de una FACB ISA."""
     text = read_text(pdf_path, max_pages=2)
     d    = {}
 
@@ -223,7 +244,8 @@ def extract_facb(pdf_path):
     if m:
         d["tc"] = float(m.group(1).replace(",", ""))
 
-    m = re.search(r"TOTAL\s+USD\s+([\d,]+\.?\d*)", text)
+    # Total: buscar patrón TOTAL USD o SubTotal USD
+    m = re.search(r"(?:TOTAL|SubTotal)\s+USD\s+([\d,]+\.?\d*)", text)
     if m:
         d["total"] = float(m.group(1).replace(",", ""))
 
@@ -241,7 +263,7 @@ def extract_facb(pdf_path):
     if m:
         d["client"] = m.group(1).strip()
 
-    # Buque desde la línea "M/V NOMBRE  DD-MM-YYYY"
+    # Buque desde "M/V NOMBRE  DD-MM-YYYY"
     m = re.search(r"M/V\s+([A-Z][A-Z\s]+?)\s+\d{2}[-/]\d{2}[-/]", text)
     if m:
         d["vessel"] = "M/V " + m.group(1).strip()
@@ -260,16 +282,16 @@ MONTH_MAP = {
 }
 
 def extract_sof(pdf_path):
-    """Extrae vessel, sailed, port del SOF."""
-    text = read_text(pdf_path, max_pages=2)
+    """Extrae vessel, sailed, port. Funciona con texto y con PDFs escaneados."""
+    text = read_text(pdf_path, max_pages=3)
     d    = {}
 
-    # Vessel: línea "m.v. "THE ETERNAL""
+    # Vessel
     m = re.search(r'm\.v\.\s*["\']?([A-Z][A-Z0-9\s"\']+?)["\']?\s*[\r\n]', text)
     if m:
         d["vessel"] = "M/V " + m.group(1).strip().strip("\"'")
 
-    # Sailed: fecha en formato DD/MM/YYYY o similar
+    # Sailed
     m = re.search(r'Sailed?\s*[\r\n\s:]+(\d{1,2})/(\d{2})/(\d{4})', text)
     if m:
         day, mon, yr = m.group(1), m.group(2), m.group(3)
@@ -286,30 +308,16 @@ def extract_sof(pdf_path):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def analyze(work_dir):
-    """
-    Escanea todos los PDFs del directorio y devuelve un dict completo.
-    """
     pdfs = sorted(f for f in os.listdir(work_dir) if f.lower().endswith(".pdf"))
 
     result = {
-        # Archivos por tipo
-        "sof":           None,
-        "bna":           None,
-        "facbs":         [],      # [{filename, number, tc, total, type, label, client, vessel}]
-        "consorcio":     [],
-        "donmar":        [],
-        "puerto_mariel": [],
-        "maritime":      [],      # [{filename, pages:[{page, category, voucher}]}]
-        "amarradores":   [],
-        "ammoca":        [],
-        "centro_nav":    [],
-        "unknown":       [],
-        # Datos inferidos
-        "vessel":    None,
-        "client":    None,
-        "sailed":    None,
-        "port":      None,
-        "tc_groups": {},  # {tc: [(number, label, amount)]}
+        "sof": None, "bna": None,
+        "facbs": [], "consorcio": [], "donmar": [],
+        "puerto_mariel": [], "maritime": [],
+        "amarradores": [], "ammoca": [], "centro_nav": [],
+        "unknown": [],
+        "vessel": None, "client": None, "sailed": None, "port": None,
+        "tc_groups": {},
     }
 
     for fname in pdfs:
@@ -357,7 +365,7 @@ def analyze(work_dir):
         else:
             result["unknown"].append(fname)
 
-    # Orden: agency primero en FACBs y en tc_groups
+    # Ordenar: agency primero
     type_order = {"agency": 0, "ncb": 1, "port_expenses": 2}
     result["facbs"].sort(key=lambda f: (type_order.get(f.get("type",""), 9), f.get("number","")))
     for tc in result["tc_groups"]:
@@ -370,3 +378,4 @@ def analyze(work_dir):
     result["puerto_mariel"].sort()
 
     return result
+
