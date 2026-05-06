@@ -422,6 +422,12 @@ def build_fda(analysis, work_dir, output_path, advance, date):
     facb_files = {f["number"]: f["filename"]
                   for f in analysis["facbs"] if f.get("number")}
 
+    # Extraer montos por línea de la FACB de port expenses
+    port_facb = next((f for f in analysis["facbs"] if f.get("type")=="port_expenses"), None)
+    line_amounts = {}
+    if port_facb and port_facb.get("filename"):
+        line_amounts = extract_facb_line_amounts(fp(port_facb["filename"]))
+
     # 1. Sumario
     print("  [1] Sumario...")
     for pg in make_summary(vessel, port, sailed, date, client, advance, tc_groups).pages:
@@ -438,7 +444,12 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         add_pdf(writer, fp(analysis["bna"]))
 
     # 4+. FACBs y vouchers
-    invoice_map = build_invoice_map(analysis, work_dir)
+    # Detectar puerto y construir invoice_map con reglas del puerto
+    import sys, os as _os
+    sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from ports import detect_port
+    port_config = detect_port(analysis)
+    invoice_map = port_config.build_invoice_map(analysis, work_dir, line_amounts)
     tc_inserted = set()
     step = 4
 
@@ -458,7 +469,7 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         # Voucher
         concept = entry["concept"]
         amount  = entry["amount"]
-        port_v  = port.replace(" Port", "")
+        port_v  = port.replace(" Port", "").replace(" port", "")
         print(f"  [{step}] Voucher: {concept}")
         for pg in make_voucher(concept, amount, tc, vessel, sailed, port_v).pages:
             writer.add_page(pg)
@@ -489,4 +500,5 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         "vessel":    vessel,
         "client":    client,
     }
+
 
