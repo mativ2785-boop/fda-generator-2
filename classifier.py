@@ -72,6 +72,9 @@ DOC_TYPES_CONTENT = [
     ("sof",           ["Standard Statement on Fact"]),
     ("sof",           ["Statement of Facts"]),
     ("sof",           ["Exceeding expectations", "VESSEL"]),  # SOF con logo ISA
+    # Maritime MUST come before bna — some Maritime expedientes contain BNA pages
+    ("maritime",      ["SUCURSAL: Bahía Blanca", "FACT CRED ELECT"]),
+    ("maritime",      ["SUCURSAL: Necochea", "FACT CRED ELECT"]),
     ("bna",           ["Cotizaciones históricas", "Dolar U.S.A"]),
     ("bna",           ["Banco de la Naci", "Cotizaciones"]),
     ("bna",           ["Dolar U.S.A", "Compra", "Venta", "Fecha"]),
@@ -91,10 +94,24 @@ DOC_TYPES_CONTENT = [
     ("puerto_mariel", ["Towage Service", "COOPOR"]),
     ("maritime",      ["MARITIME SHIPPING AGENCY"]),
     ("maritime",      ["SUCURSAL: Bahía Blanca", "FACT CRED ELECT"]),
+    ("maritime",      ["SUCURSAL: Necochea", "FACT CRED ELECT"]),
+    ("maritime",      ["Maritime Shipping Agency", "FACT CRED ELECT"]),
+    ("maritime",      ["Maritime Shipping Agency", "Disbursement"]),
     ("amarradores",   ["AMARRADORES DEL PUERTO DE BAHIA BLANCA"]),
     ("ammoca",        ["AMMOCA S.A."]),
     ("centro_nav",    ["Centro de Navegación Asociación Civil"]),
     ("centro_nav",    ["cnav.org.ar"]),
+    ("centro_nav",    ["centrodenavegaci"]),
+    ("centro_nav",    ["Centro de Navegaci", "Florida 537"]),
+    # Necochea-specific providers
+    ("consorcio_quequen", ["Consorcio de Gestión del Puerto Quequén"]),
+    ("consorcio_quequen", ["Puerto Quequén", "Juan de Garay"]),
+    ("consorcio_quequen", ["30-66634948-9"]),
+    ("pilotaje",      ["MEYER", "ARANA", "Necochea"]),
+    ("melluso",       ["MELLUSO S.A."]),
+    ("melluso",       ["SERVICIO DE LANCHAS Y AMARRADORES PUERTO QUEQUEN"]),
+    ("shore_gangway", ["SHORE GANGWAY", "30716643685"]),
+    ("shore_gangway", ["SHORE GANGWAY", "CRANE SERVICE"]),
 ]
 
 # Detección por nombre de archivo (fallback cuando el PDF es imagen/escaneado)
@@ -106,9 +123,14 @@ DOC_TYPES_NAME = [
     ("donmar",        ["DONMAR"]),
     ("puerto_mariel", ["MARIEL", "TOWAGE"]),
     ("maritime",      ["MARITIME"]),
+    ("maritime",      ["MARITIM"]),
     ("amarradores",   ["AMARRADORES"]),
     ("ammoca",        ["AMMOCA"]),
     ("centro_nav",    ["NAVEGACION", "CNAV"]),
+    ("consorcio_quequen", ["QUEQUEN", "QUEQU"]),
+    ("pilotaje",      ["MEYER", "ARANA"]),
+    ("melluso",       ["MELLUSO"]),
+    ("shore_gangway", ["GANGWAY", "PASARELA"]),
 ]
 
 
@@ -141,6 +163,7 @@ MARITIME_PAGE_RULES = [
     ("skip",              ["FACT CRED ELECT"]),
     ("skip",              ["MiPyME"]),
     ("skip",              ["Disbursement Account"]),
+    ("skip",              ["DISBURSEMENT ACCOUNT"]),
     ("headclerk_break",   ["HEAD CLERK", "Breakdown"]),
     ("headclerk_liq",     ["LIQUIDACION DE PAGO A ENCARGADOS"]),
     ("watchmen_break",    ["WATCHMEN", "Breakdown"]),
@@ -150,6 +173,7 @@ MARITIME_PAGE_RULES = [
     ("se_inward",         ["SOLICITUD DE HABILITACION", "FEVA"]),
     ("se_permanencia",    ["SOLICITUD DE HABILITACION", "permanencia"]),
     ("se_permanencia",    ["SOLICITUD DE HABILITACION", "PERMANENCIA"]),
+    ("se_permanencia",    ["SOLICITUD DE HABILITACION DE", "SERVICIOS EXTRAORDINARIOS", "09:"]),
     ("se_rancho",         ["SOLICITUD DE HABILITACION", "RANCHO"]),
     ("se_rancho",         ["SOLICITUD DE HABILITACION", "VLSFO"]),
     ("migraciones_liq",   ["Migraciones", "quincena"]),
@@ -163,7 +187,15 @@ MARITIME_PAGE_RULES = [
     ("sanidad_recibo",    ["FREE PRACTIQUE", "Recib"]),
     ("senasa",            ["SENASA", "BOLETA DE PAGO"]),
     ("senasa",            ["DNO004"]),
+    ("senasa",            ["BOLETA DE PAGO", "Barreras Sanitarias"]),
+    ("senasa",            ["BOLETA DE PAGO", "66960672"]),   # Usuario SENASA Maritime
     ("amarradores_pag",   ["AMARRADORES"]),
+    ("meyer_arana",       ["MEYER", "ARANA", "Necochea"]),
+    ("meyer_arana",       ["MEYER  ARANA", "Período Facturado"]),
+    ("melluso",           ["MELLUSO S.A."]),
+    ("melluso",           ["MELLUSO", "PUERTO QUEQUEN"]),
+    ("shore_gangway_pag", ["SHORE GANGWAY", "30716643685"]),
+    ("shore_gangway_pag", ["SHORE GANGWAY", "CRANE SERVICE"]),
     ("osro",              ["OSRO", "BARRERAS FLOTANTES"]),
     ("osro",              ["COMPULSORY BARRIER"]),
     ("pest_pag",          ["AMMOCA"]),
@@ -186,11 +218,15 @@ PAGE_TO_VOUCHER = {
     "sanidad_recibo":    "SANITARY DUES AND FREE PRATIQUE",
     "senasa":            "GARBAGE COMPULSORY INSPECTION",
     "amarradores_pag":   "MOORING & UNMOORING SERVICES",
-    "mooring_img":       "MOORING & UNMOORING SERVICES",
+    "mooring_img":       None,   # imágenes de scan → omitir
+    "meyer_arana":       "PORT PILOTAGE",
+    "melluso_pag":       "MOORING & UNMOORING SERVICES",
+    "shore_gangway_pag": "SHORE GANGWAY",
     "osro":              "OSRO ANNEX 18",
     "pest_pag":          "PEST CONTROL",
     "skip":              None,
     "skip_dup":          None,
+    "disbursement":      None,
     "unknown":           None,
 }
 
@@ -268,6 +304,12 @@ def extract_facb(pdf_path):
     if m:
         d["vessel"] = "M/V " + m.group(1).strip()
 
+    # Puerto desde FACB (línea "NECOCHEA PORT" o "BAHIA BLANCA PORT")
+    if "NECOCHEA PORT" in text.upper():
+        d["port"] = "Necochea Port"
+    elif "BAHIA BLANCA PORT" in text.upper():
+        d["port"] = "Bahia Blanca Port"
+
     return d
 
 
@@ -299,6 +341,8 @@ def extract_sof(pdf_path):
 
     if "Bahia Blanca" in text or "BAHIA BLANCA" in text:
         d["port"] = "Bahia Blanca Port"
+    elif "Necochea" in text or "NECOCHEA" in text or "Quequén" in text or "QUEQUEN" in text:
+        d["port"] = "Necochea Port"
 
     return d
 
@@ -315,6 +359,8 @@ def analyze(work_dir):
         "facbs": [], "consorcio": [], "donmar": [],
         "puerto_mariel": [], "maritime": [],
         "amarradores": [], "ammoca": [], "centro_nav": [],
+        # Necochea-specific
+        "consorcio_quequen": [], "pilotaje": [], "melluso": [], "shore_gangway": [],
         "unknown": [],
         "vessel": None, "client": None, "sailed": None, "port": None,
         "tc_groups": {},
@@ -340,6 +386,7 @@ def analyze(work_dir):
             result["facbs"].append(d)
             result["client"] = result["client"] or d.get("client")
             result["vessel"] = result["vessel"] or d.get("vessel")
+            result["port"]   = result["port"]   or d.get("port")
             tc  = d.get("tc", 0)
             num = d.get("number", "?")
             lbl = d.get("label", "Port expenses")
@@ -360,8 +407,19 @@ def analyze(work_dir):
             result["amarradores"].append(fname)
         elif dtype == "ammoca":
             result["ammoca"].append(fname)
-        elif dtype == "centro_navegacion":
+        elif dtype == "centro_nav":
             result["centro_nav"].append(fname)
+        # Necochea-specific
+        elif dtype == "consorcio_quequen":
+            result["consorcio_quequen"].append(fname)
+            # Also add to "consorcio" for unified port detection
+            result["consorcio"].append(fname)
+        elif dtype == "pilotaje":
+            result["pilotaje"].append(fname)
+        elif dtype == "melluso":
+            result["melluso"].append(fname)
+        elif dtype == "shore_gangway":
+            result["shore_gangway"].append(fname)
         else:
             result["unknown"].append(fname)
 
@@ -378,5 +436,6 @@ def analyze(work_dir):
     result["puerto_mariel"].sort()
 
     return result
+
 
 
