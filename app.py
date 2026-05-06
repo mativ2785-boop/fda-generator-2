@@ -9,6 +9,7 @@ from assembler  import build_fda
 from datetime   import date as today_date
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB máximo
 
 SESSIONS  = {}
 MONTHS    = ["January","February","March","April","May","June",
@@ -308,7 +309,7 @@ def upload():
     if not f or not f.filename.endswith(".zip"):
         return jsonify({"error": "Subí un .zip"}), 400
 
-    work_dir = tempfile.mkdtemp(prefix="fda_")
+    work_dir = tempfile.mkdtemp(prefix="fda_", dir="/tmp")
     zip_path = os.path.join(work_dir, "upload.zip")
     f.save(zip_path)
 
