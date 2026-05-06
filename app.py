@@ -1,26 +1,26 @@
 """
 app.py  —  ISA FDA Generator · Render.com
+El PDF se devuelve como base64 en la respuesta JSON
+para evitar problemas de descarga entre workers.
 """
 
-import os, uuid, shutil, tempfile, traceback
-from flask import Flask, request, jsonify, send_file, render_template_string
+import os, uuid, shutil, tempfile, traceback, base64
+from flask import Flask, request, jsonify, render_template_string
 from classifier import extract_zip, analyze
 from assembler  import build_fda
 from datetime   import date as today_date
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB máximo
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
 
-SESSIONS  = {}
-MONTHS    = ["January","February","March","April","May","June",
-             "July","August","September","October","November","December"]
+SESSIONS = {}
+MONTHS   = ["January","February","March","April","May","June",
+            "July","August","September","October","November","December"]
 
 def today_str():
     d = today_date.today()
     return f"{MONTHS[d.month-1]} {d.day}, {d.year}"
 
-
-# ── HTML ──────────────────────────────────────────────────────────────────────
 
 HTML = r"""<!DOCTYPE html>
 <html lang="es">
@@ -62,7 +62,7 @@ main{max-width:820px;margin:30px auto;padding:0 16px;
       padding:8px 12px;font-size:.81rem}
 .chip .lbl{font-weight:700;color:#1428B4;font-size:.72rem;text-transform:uppercase;margin-bottom:2px}
 .chip.warn{border-left-color:#e67e22}.chip.warn .lbl{color:#e67e22}
-.chip.ok  {border-left-color:#27ae60}.chip.ok   .lbl{color:#27ae60}
+.chip.ok{border-left-color:#27ae60}.chip.ok .lbl{color:#27ae60}
 .facbs{margin-top:14px}
 .facb{background:#f9f9ff;border:1px solid #dde;border-radius:8px;
       padding:9px 13px;margin-bottom:7px;
@@ -217,7 +217,7 @@ function render(a) {
   mb.innerHTML = "";
   if(a.maritime && a.maritime.length) {
     ms.style.display = "block";
-    const opts = [
+    const cats = [
       ["AGENCY FEE","Agency Fee"],
       ["CUSTOM HOUSE EXPENSES","Custom House Expenses"],
       ["CUSTOM HOUSE PERMANENCE","Custom House Permanence"],
@@ -237,7 +237,7 @@ function render(a) {
       const rows = m.pages.map(pg=>{
         const skip = pg.category.startsWith("skip") || !pg.voucher;
         const sel  = skip ? "skip" : (pg.voucher||"skip");
-        const o = opts.replace(`value="${sel}"`,`value="${sel}" selected`);
+        const o = cats.replace(`value="${sel}"`,`value="${sel}" selected`);
         return `<tr class="${skip?'skip':''}">
           <td><strong>p${pg.page+1}</strong></td>
           <td>${pg.category}</td>
@@ -267,6 +267,7 @@ async function gen() {
   document.getElementById("btn").disabled = true;
   document.getElementById("spin").style.display = "block";
   document.getElementById("result").style.display = "none";
+
   let d;
   try {
     d = await (await fetch("/generate",{
@@ -274,20 +275,29 @@ async function gen() {
       body:JSON.stringify({session_id:sid,advance:adv,date,overrides:ov})
     })).json();
   } catch(e){ d={error:e.message}; }
+
   document.getElementById("spin").style.display = "none";
   document.getElementById("btn").disabled = false;
   const res = document.getElementById("result");
   res.style.display = "block";
+
   if(d.error) {
     res.innerHTML=`<div class="err">❌ Error:\n${d.error}</div>`;
   } else {
+    // Descarga directa desde base64 — sin endpoint /download
+    const bytes = atob(d.pdf_b64);
+    const arr   = new Uint8Array(bytes.length);
+    for(let i=0;i<bytes.length;i++) arr[i]=bytes.charCodeAt(i);
+    const blob  = new Blob([arr],{type:"application/pdf"});
+    const url   = URL.createObjectURL(blob);
+
     res.innerHTML=`<div class="ok-box">
       <h2>✅ FDA generado</h2>
       <p><strong>${d.vessel}</strong><br>
       ${d.pages} páginas · Total USD ${d.total.toLocaleString('en-US',{minimumFractionDigits:2})}
       ${d.advance>0?` · Advance USD ${d.advance.toLocaleString('en-US',{minimumFractionDigits:2})}`:''}
       <br>Balance: <strong>USD ${Math.abs(d.balance).toLocaleString('en-US',{minimumFractionDigits:2})} ${d.direction}</strong></p>
-      <a class="dl" href="/download/${d.file_id}">⬇ Descargar FDA</a>
+      <a class="dl" href="${url}" download="${d.filename}">⬇ Descargar FDA</a>
     </div>`;
   }
 }
@@ -295,8 +305,6 @@ async function gen() {
 </body>
 </html>"""
 
-
-# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
@@ -358,31 +366,21 @@ def generate():
 
     advance  = float(data.get("advance", 0))
     date_str = data.get("date") or today_str()
-    file_id  = str(uuid.uuid4())
-    out_path = os.path.join(work_dir, f"FDA_{file_id}.pdf")
+    out_path = os.path.join(work_dir, f"FDA_{uuid.uuid4()}.pdf")
 
     try:
         result = build_fda(analysis, work_dir, out_path, advance, date_str)
-        result["file_id"] = file_id
+        with open(out_path, "rb") as f:
+            pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
+        vessel_slug = (analysis.get("vessel") or "VESSEL")\
+            .replace("M/V ", "").replace(" ", "_")
+        result["pdf_b64"]  = pdf_b64
+        result["filename"] = f"FDA_{vessel_slug}.pdf"
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": traceback.format_exc()}), 500
 
 
-@app.route("/download/<file_id>")
-def download(file_id):
-    for sid, sess in SESSIONS.items():
-        path = os.path.join(sess["work_dir"], f"FDA_{file_id}.pdf")
-        if os.path.exists(path):
-            vessel = sess["analysis"].get("vessel", "VESSEL")\
-                .replace("M/V ", "").replace(" ", "_")
-            return send_file(path, as_attachment=True,
-                             download_name=f"FDA_{vessel}.pdf",
-                             mimetype="application/pdf")
-    return "No encontrado", 404
-
-
-# Render usa la variable de entorno PORT
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
