@@ -3,7 +3,8 @@ assembler.py  —  ISA FDA Generator · Bahia Blanca
 Construye el invoice_map y ensambla el PDF final.
 """
 
-import os, io
+import os, io, re
+import fitz  # PyMuPDF
 from pypdf import PdfWriter, PdfReader
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
@@ -241,6 +242,37 @@ def make_summary(vessel, port, sailed, date, client, advance, tc_groups):
 
 # ── Invoice map ───────────────────────────────────────────────────────────────
 
+def extract_facb_line_amounts(pdf_path):
+    """
+    Extrae montos por concepto de una FACB de port expenses.
+    El formato del PDF tiene cada campo en una línea separada:
+    N° / CONCEPTO / 1.00 / MONTO / MONTO_FORMATEADO
+    Devuelve dict {CONCEPTO: monto}
+    """
+    import re
+    amounts = {}
+    try:
+        doc   = fitz.open(pdf_path)
+        text  = doc[0].get_text()
+        lines = [l.strip() for l in text.split("\n")]
+        i = 0
+        while i < len(lines):
+            # Buscar número de línea standalone (1, 2, 3...)
+            if re.match(r"^\d+$", lines[i]) and i + 3 < len(lines):
+                concept = lines[i + 1].strip().upper()
+                if lines[i + 2] == "1.00":
+                    try:
+                        amount = float(lines[i + 3].replace(",", ""))
+                        amounts[concept] = amount
+                        i += 4
+                        continue
+                    except ValueError:
+                        pass
+            i += 1
+    except Exception:
+        pass
+    return amounts
+
 def build_invoice_map(analysis, work_dir):
     """
     Construye lista ordenada de vouchers [{concept, amount, tc, invoices, solo}].
@@ -251,11 +283,23 @@ def build_invoice_map(analysis, work_dir):
     tc_port   = next((f["tc"] for f in analysis["facbs"] if f.get("type")=="port_expenses"),
                      tc_agency)
 
-    # Agrupar páginas Maritime por voucher
-    mar_pages = {}   # voucher → [(filename, page_idx)]
+    # Extraer montos individuales de la FACB de port expenses
+    port_facb = next((f for f in analysis["facbs"] if f.get("type")=="port_expenses"), None)
+    line_amounts = {}
+    if port_facb and port_facb.get("filename"):
+        line_amounts = extract_facb_line_amounts(os.path.join(work_dir, port_facb["filename"]))
+
+    def amt(concept_key):
+        return line_amounts.get(concept_key.upper(), 0)
+
+    # Agrupar páginas Maritime por voucher — excluir mooring_img de Mooring
+    mar_pages = {}
     for m in analysis["maritime"]:
         for pg in m["pages"]:
-            v = pg.get("voucher")
+            v   = pg.get("voucher")
+            cat = pg.get("category", "")
+            if v == "MOORING & UNMOORING SERVICES" and cat == "mooring_img":
+                continue  # Solo incluir página de Amarradores, no imágenes de scan
             if v:
                 mar_pages.setdefault(v, []).append((m["filename"], pg["page"]))
 
@@ -281,21 +325,21 @@ def build_invoice_map(analysis, work_dir):
     # Port Dues — primera factura del Consorcio
     if analysis["consorcio"]:
         entries["PORT DUES"] = {
-            "concept": "PORT DUES", "amount": 0, "tc": tc_port,
+            "concept": "PORT DUES", "amount": amt("PORT DUES"), "tc": tc_port,
             "invoices": [(analysis["consorcio"][0], None)],
         }
 
     # Toll Dues — todas las facturas del Consorcio
     if analysis["consorcio"]:
         entries["TOLL DUES"] = {
-            "concept": "TOLL DUES", "amount": 0, "tc": tc_port,
+            "concept": "TOLL DUES", "amount": amt("TOLL DUES"), "tc": tc_port,
             "invoices": [(f, None) for f in analysis["consorcio"]],
         }
 
     # Port Pilotage — Donmar
     if analysis["donmar"]:
         entries["PORT PILOTAGE"] = {
-            "concept": "PORT PILOTAGE", "amount": 0, "tc": tc_port,
+            "concept": "PORT PILOTAGE", "amount": amt("PORT PILOTAGE"), "tc": tc_port,
             "invoices": [(f, None) for f in analysis["donmar"]],
         }
 
@@ -304,14 +348,14 @@ def build_invoice_map(analysis, work_dir):
     ama_inv     = [(f, None) for f in analysis["amarradores"]]
     if mooring_inv or ama_inv:
         entries["MOORING & UNMOORING SERVICES"] = {
-            "concept": "MOORING & UNMOORING SERVICES", "amount": 0, "tc": tc_port,
+            "concept": "MOORING & UNMOORING SERVICES", "amount": amt("MOORING & UNMOORING SERVICES"), "tc": tc_port,
             "invoices": mooring_inv + ama_inv,
         }
 
     # Towage — Puerto Mariel
     if analysis["puerto_mariel"]:
         entries["TOWAGE SERVICES"] = {
-            "concept": "TOWAGE SERVICES", "amount": 0, "tc": tc_port,
+            "concept": "TOWAGE SERVICES", "amount": amt("TOWAGE SERVICES"), "tc": tc_port,
             "invoices": [(f, None) for f in analysis["puerto_mariel"]],
         }
 
@@ -329,7 +373,7 @@ def build_invoice_map(analysis, work_dir):
         inv = mar_inv(voucher)
         if inv:
             entries[voucher] = {
-                "concept": voucher, "amount": 0, "tc": tc_port,
+                "concept": voucher, "amount": amt(voucher), "tc": tc_port,
                 "invoices": inv,
             }
 
@@ -338,7 +382,7 @@ def build_invoice_map(analysis, work_dir):
     pest_ama  = [(f, None) for f in analysis["ammoca"]]
     if pest_inv or pest_ama:
         entries["PEST CONTROL"] = {
-            "concept": "PEST CONTROL", "amount": 0, "tc": tc_port,
+            "concept": "PEST CONTROL", "amount": amt("PEST CONTROL"), "tc": tc_port,
             "invoices": pest_inv + pest_ama,
         }
 
@@ -346,13 +390,13 @@ def build_invoice_map(analysis, work_dir):
     osro_inv = mar_inv("OSRO ANNEX 18")
     if osro_inv:
         entries["OSRO ANNEX 18"] = {
-            "concept": "OSRO ANNEX 18", "amount": 0, "tc": tc_port,
+            "concept": "OSRO ANNEX 18", "amount": amt("OSRO ANNEX 18"), "tc": tc_port,
             "invoices": osro_inv,
         }
 
     # Tax — siempre último
     entries["TAX ON CREDIT/DEBIT LAW 25.413"] = {
-        "concept": "TAX ON CREDIT/DEBIT LAW 25.413", "amount": 0,
+        "concept": "TAX ON CREDIT/DEBIT LAW 25.413", "amount": amt("TAX ON CREDIT/DEBIT LAW 25.413"),
         "tc": tc_port, "invoices": [], "solo": True,
     }
 
@@ -445,3 +489,4 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         "vessel":    vessel,
         "client":    client,
     }
+
