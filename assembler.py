@@ -3,9 +3,18 @@ assembler.py  —  ISA FDA Generator · Bahia Blanca
 Construye el invoice_map y ensambla el PDF final.
 """
 
-import os, io, re
+import os, io, re, sys
 import fitz  # PyMuPDF
 from pypdf import PdfWriter, PdfReader
+
+# Importar sistema de puertos — funciona tanto en local como en Render
+def _detect_port(analysis):
+    """Detecta el puerto y retorna la config correspondiente."""
+    _dir = os.path.dirname(os.path.abspath(__file__))
+    if _dir not in sys.path:
+        sys.path.insert(0, _dir)
+    from ports import detect_port
+    return detect_port(analysis)
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
@@ -443,12 +452,8 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         print("  [3] BNA...")
         add_pdf(writer, fp(analysis["bna"]))
 
-    # 4+. FACBs y vouchers
-    # Detectar puerto y construir invoice_map con reglas del puerto
-    import sys, os as _os
-    sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
-    from ports import detect_port
-    port_config = detect_port(analysis)
+    # 4+. FACBs y vouchers — detectar puerto automáticamente
+    port_config = _detect_port(analysis)
     invoice_map = port_config.build_invoice_map(analysis, work_dir, line_amounts)
     tc_inserted = set()
     step = 4
@@ -500,5 +505,6 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         "vessel":    vessel,
         "client":    client,
     }
+
 
 
