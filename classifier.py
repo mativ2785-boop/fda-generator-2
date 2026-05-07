@@ -168,12 +168,16 @@ MARITIME_PAGE_RULES = [
     ("headclerk_liq",     ["LIQUIDACION DE PAGO A ENCARGADOS"]),
     ("watchmen_break",    ["WATCHMEN", "Breakdown"]),
     ("watchmen_liq",      ["LIQUIDACION DE PAGO", "SERENO"]),
+    ("watchmen_liq",      ["Employee Sales", "Jornales / Wages", "GRAND TOTAL"]),
+    ("watchmen_liq",      ["Jornales / Wages", "Movilidad / Travel"]),
     ("afip_lman",         ["LMAN", "ADMINISTRACION FEDERAL DE INGRESOS"]),
     ("se_inward",         ["SOLICITUD DE HABILITACION", "FORMALIZACION DE ENTRADA"]),
     ("se_inward",         ["SOLICITUD DE HABILITACION", "FEVA"]),
+
     ("se_permanencia",    ["SOLICITUD DE HABILITACION", "permanencia"]),
     ("se_permanencia",    ["SOLICITUD DE HABILITACION", "PERMANENCIA"]),
     ("se_permanencia",    ["SOLICITUD DE HABILITACION DE", "SERVICIOS EXTRAORDINARIOS", "09:"]),
+    ("se_permanencia",    ["SOLICITUD DE HABILITACION DE", "SERVICIOS EXTRAORDINARIOS"]),
     ("se_rancho",         ["SOLICITUD DE HABILITACION", "RANCHO"]),
     ("se_rancho",         ["SOLICITUD DE HABILITACION", "VLSFO"]),
     ("migraciones_liq",   ["Migraciones", "quincena"]),
@@ -188,12 +192,18 @@ MARITIME_PAGE_RULES = [
     ("senasa",            ["SENASA", "BOLETA DE PAGO"]),
     ("senasa",            ["DNO004"]),
     ("senasa",            ["BOLETA DE PAGO", "Barreras Sanitarias"]),
-    ("senasa",            ["BOLETA DE PAGO", "66960672"]),   # Usuario SENASA Maritime
+    ("senasa",            ["BOLETA DE PAGO", "66960672"]),
+    ("senasa",            ["BOLETA DE PAGO", "MARITIME SHIPPING"]),
+    ("senasa",            ["BOLETA DE PAGO", "MARITIME"]),
     ("amarradores_pag",   ["AMARRADORES"]),
     ("meyer_arana",       ["MEYER", "ARANA", "Necochea"]),
     ("meyer_arana",       ["MEYER  ARANA", "Período Facturado"]),
+    ("meyer_arana",       ["LABARTHE", "PRACTICAJE", "QUEQUEN"]),
+    ("meyer_arana",       ["LABARTHE", "Período Facturado"]),
     ("melluso",           ["MELLUSO S.A."]),
     ("melluso",           ["MELLUSO", "PUERTO QUEQUEN"]),
+    ("melluso",           ["MARITIMA QUEUQUEN"]),
+    ("melluso",           ["MARITIMA QUEQUEN"]),
     ("shore_gangway_pag", ["SHORE GANGWAY", "30716643685"]),
     ("shore_gangway_pag", ["SHORE GANGWAY", "CRANE SERVICE"]),
     ("osro",              ["OSRO", "BARRERAS FLOTANTES"]),
@@ -221,6 +231,7 @@ PAGE_TO_VOUCHER = {
     "mooring_img":       None,   # imágenes de scan → omitir
     "meyer_arana":       "PORT PILOTAGE",
     "melluso_pag":       "MOORING & UNMOORING SERVICES",
+    "melluso":           "MOORING & UNMOORING SERVICES",
     "shore_gangway_pag": "SHORE GANGWAY",
     "osro":              "OSRO ANNEX 18",
     "pest_pag":          "PEST CONTROL",
@@ -300,7 +311,7 @@ def extract_facb(pdf_path):
         d["client"] = m.group(1).strip()
 
     # Buque desde "M/V NOMBRE  DD-MM-YYYY"
-    m = re.search(r"M/V\s+([A-Z][A-Z\s]+?)\s+\d{2}[-/]\d{2}[-/]", text)
+    m = re.search(r"M/V\s+([A-Z][A-Z0-9\s\-]+?)\s+\d{2}[-/]\d{2}[-/]", text)
     if m:
         d["vessel"] = "M/V " + m.group(1).strip()
 
@@ -436,6 +447,7 @@ def analyze(work_dir):
     result["puerto_mariel"].sort()
 
     return result
+
 
 
 
