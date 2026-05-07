@@ -92,7 +92,7 @@ class NecocheaPort:
     VOUCHER_ORDER = [
         "AGENCY FEE", "PORT DUES", "ENTRANCE AND LIGHT DUES", "TOLL DUES",
         "PORT PILOTAGE", "PORT PILOTAGE (DELAY)", "MOORING & UNMOORING SERVICES",
-        "SHORE GANGWAY", "CUSTOM HOUSE EXPENSES", "CUSTOM HOUSE PERMANENCE",
+        "SHORE GANGWAY", "TOWAGE SERVICES", "CUSTOM HOUSE EXPENSES", "CUSTOM HOUSE PERMANENCE",
         "MIGRATION EXPENSES", "SANITARY DUES AND FREE PRATIQUE",
         "GARBAGE COMPULSORY INSPECTION", "WATCHMEN COMPULSORY SERVICES",
         "HEADCLERK COMPULSORY SERVICES", "PEST CONTROL",
@@ -140,6 +140,12 @@ class NecocheaPort:
         if sg:
             entries["SHORE GANGWAY"] = {"concept":"SHORE GANGWAY","amount":amt("SHORE GANGWAY"),
                 "tc":tc_port,"invoices":sg}
+        # Towage Services — Puerto Mariel (cuando aplica en Necochea)
+        if analysis.get("puerto_mariel"):
+            entries["TOWAGE SERVICES"] = {"concept":"TOWAGE SERVICES",
+                "amount":amt("TOWAGE SERVICES"),"tc":tc_port,
+                "invoices":[(f,None) for f in analysis["puerto_mariel"]]}
+
         # Custom House Expenses: Maritime + Centro de Navegación
         ch = mar.get("CUSTOM HOUSE EXPENSES",[]) + [(f,None) for f in analysis.get("centro_nav",[])]
         if ch:
@@ -196,3 +202,4 @@ def detect_port(analysis):
         return NecocheaPort()
 
     return BahiaBlancaPort()
+
