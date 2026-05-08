@@ -7,14 +7,16 @@ import os, io, re, sys
 import fitz  # PyMuPDF
 from pypdf import PdfWriter, PdfReader
 
-# Importar sistema de puertos — funciona tanto en local como en Render
+# Importar sistema de puertos desde ports.py (archivo único, compatible con Render)
+try:
+    from ports import detect_port as _detect_port_fn
+except ImportError:
+    import sys as _sys, os as _os2
+    _sys.path.insert(0, _os2.path.dirname(_os2.path.abspath(__file__)))
+    from ports import detect_port as _detect_port_fn
+
 def _detect_port(analysis):
-    """Detecta el puerto y retorna la config correspondiente."""
-    _dir = os.path.dirname(os.path.abspath(__file__))
-    if _dir not in sys.path:
-        sys.path.insert(0, _dir)
-    from ports import detect_port
-    return detect_port(analysis)
+    return _detect_port_fn(analysis)
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
@@ -132,24 +134,26 @@ def make_summary(vessel, port, sailed, date, client, advance, tc_groups):
     buf = io.BytesIO()
     c   = canvas.Canvas(buf, pagesize=A4)
 
-    # Header
-    lw = lh = 95
+    # Header — Logo grande arriba a la derecha
+    lw = lh = 120
     if os.path.exists(LOGO):
-        c.drawImage(LOGO, 40, PH-20-lh, width=lw, height=lh,
+        c.drawImage(LOGO, PW-40-lw, PH-20-lh, width=lw, height=lh,
                     preserveAspectRatio=True, mask="auto")
-    c.setFont("Helvetica-Bold", 16); c.setFillColor(ISA_BLUE)
-    c.drawString(145, PH-45, "INDEPENDENT SHIP AGENTS S.A.")
+
+    # Fecha "Buenos Aires, DD Month YYYY" alineada a la izquierda
     c.setFont("Helvetica", 9); c.setFillColor(colors.black)
-    c.drawString(145, PH-60, "www.isa-agents.com.ar")
+    c.drawString(40, PH-150, f"Buenos Aires, {date}")
+
+    # Disbursement Summary a la izquierda
     c.setFont("Helvetica-Oblique", 11); c.setFillColor(ISA_BLUE)
-    c.drawRightString(555, PH-42, "Disbursement Summary")
+    c.drawString(40, PH-80, "Disbursement Summary")
 
     c.setStrokeColor(ISA_BLUE)
-    c.setLineWidth(3); c.line(40, PH-125, 555, PH-125)
-    c.setLineWidth(1); c.line(40, PH-129, 555, PH-129)
+    c.setLineWidth(3); c.line(40, PH-165, 555, PH-165)
+    c.setLineWidth(1); c.line(40, PH-169, 555, PH-169)
 
     # Vessel data
-    y0 = PH-148; RH = 20
+    y0 = PH-188; RH = 20
     for i, (lbl, val) in enumerate([("To:", client), ("Vessel:", vessel), ("Port:", port)]):
         bg = colors.HexColor("#F2F2F2") if i%2==0 else colors.white
         c.setFillColor(bg); c.rect(40, y0-RH*(i+1), 260, RH, fill=1, stroke=0)
@@ -225,8 +229,18 @@ def make_summary(vessel, port, sailed, date, client, advance, tc_groups):
         "We thank you very much for having chosen us as agents. We trust our performance has reached your requirements, and we look")
     c.drawString(40, ry-48, "forward to be of assistance to you in the future.")
 
-    # Bank details
-    bk_y = ry-80; bk_w = 275; bk_x = (PW-bk_w)/2
+    # Footer ISA — dirección + teléfono + email + web
+    c.setStrokeColor(colors.HexColor("#CCCCCC"))
+    c.setLineWidth(0.5)
+    c.line(40, 55, 555, 55)
+    c.setFont("Helvetica-Bold", 8); c.setFillColor(ISA_BLUE)
+    c.drawString(40, 44, "Independent Ship Agents S.A.")
+    c.setFont("Helvetica", 8); c.setFillColor(colors.black)
+    c.drawString(40, 34, "Av. del Libertador 602, 9th Floor  |  C1001ABT Buenos Aires, Argentina")
+    c.drawString(40, 24, "Tel: (+54 11) 4819-4100  |  isa@isa-agents.com.ar  |  www.isa-agents.com.ar")
+
+    # Bank details — alineado a la izquierda
+    bk_y = ry-80; bk_w = 275; bk_x = 40
     c.setFillColor(ISA_BLUE); c.rect(bk_x, bk_y, bk_w, 18, fill=1, stroke=0)
     c.setFillColor(colors.white); c.setFont("Helvetica-Bold", 9)
     c.drawString(bk_x+8, bk_y+5, "Bank Details"); bk_y -= 18
