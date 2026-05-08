@@ -228,6 +228,7 @@ function render(a) {
       ["WATCHMEN COMPULSORY SERVICES","Watchmen Services"],
       ["HEADCLERK COMPULSORY SERVICES","Headclerk Services"],
       ["MOORING & UNMOORING SERVICES","Mooring & Unmooring"],
+      ["SHORE GANGWAY","Shore Gangway"],
       ["PEST CONTROL","Pest Control"],
       ["OSRO ANNEX 18","OSRO Annex 18"],
       ["skip","— OMITIR —"],
@@ -384,4 +385,5 @@ def generate():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
