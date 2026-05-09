@@ -59,6 +59,12 @@ class BahiaBlancaPort:
         if osro: entries["OSRO ANNEX 18"] = {"concept":"OSRO ANNEX 18","amount":amt("OSRO ANNEX 18"),"tc":tc_port,"invoices":osro}
         entries["TAX ON CREDIT/DEBIT LAW 25.413"] = {"concept":"TAX ON CREDIT/DEBIT LAW 25.413",
             "amount":amt("TAX ON CREDIT/DEBIT LAW 25.413"),"tc":tc_port,"invoices":[],"solo":True}
+
+        # Fallback: si hay monto en la FACB para un concepto que no tiene voucher → crearlo
+        for concept, amount in line_amounts.items():
+            if concept not in entries and amount > 0 and concept in self.VOUCHER_ORDER:
+                entries[concept] = {"concept":concept,"amount":amount,"tc":tc_port,"invoices":[]}
+
         return [entries[v] for v in self.VOUCHER_ORDER if v in entries]
 
     def _tc_agency(self, a):
@@ -159,6 +165,12 @@ class NecocheaPort:
         if pest: entries["PEST CONTROL"] = {"concept":"PEST CONTROL","amount":amt("PEST CONTROL"),"tc":tc_port,"invoices":pest}
         entries["TAX ON CREDIT/DEBIT LAW 25.413"] = {"concept":"TAX ON CREDIT/DEBIT LAW 25.413",
             "amount":amt("TAX ON CREDIT/DEBIT LAW 25.413"),"tc":tc_port,"invoices":[],"solo":True}
+
+        # Fallback: si hay monto en la FACB para un concepto que no tiene voucher → crearlo
+        for concept, amount in line_amounts.items():
+            if concept not in entries and amount > 0 and concept in self.VOUCHER_ORDER:
+                entries[concept] = {"concept":concept,"amount":amount,"tc":tc_port,"invoices":[]}
+
         return [entries[v] for v in self.VOUCHER_ORDER if v in entries]
 
     def _tc_agency(self, a):
@@ -202,4 +214,5 @@ def detect_port(analysis):
         return NecocheaPort()
 
     return BahiaBlancaPort()
+
 
