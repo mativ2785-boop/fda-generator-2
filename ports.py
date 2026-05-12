@@ -50,17 +50,17 @@ class BahiaBlancaPort:
             entries["PORT PILOTAGE"] = {"concept":"PORT PILOTAGE","amount":amt("PORT PILOTAGE"),"tc":tc_port,
                 "invoices":[(f,None) for f in analysis["donmar"]]}
         mooring = mar.get("MOORING & UNMOORING SERVICES",[]) + [(f,None) for f in analysis.get("amarradores",[])]
-        if mooring:
+        if mooring and amt("MOORING & UNMOORING SERVICES") > 0:
             entries["MOORING & UNMOORING SERVICES"] = {"concept":"MOORING & UNMOORING SERVICES",
                 "amount":amt("MOORING & UNMOORING SERVICES"),"tc":tc_port,"invoices":mooring}
-        if analysis.get("puerto_mariel"):
+        if analysis.get("puerto_mariel") and amt("TOWAGE SERVICES") > 0:
             entries["TOWAGE SERVICES"] = {"concept":"TOWAGE SERVICES","amount":amt("TOWAGE SERVICES"),
                 "tc":tc_port,"invoices":[(f,None) for f in analysis["puerto_mariel"]]}
         for v in ["CUSTOM HOUSE EXPENSES","CUSTOM HOUSE PERMANENCE","CUSTOM HOUSE (BUNKERING)",
                   "MIGRATION EXPENSES","SANITARY DUES AND FREE PRATIQUE","GARBAGE COMPULSORY INSPECTION",
                   "WATCHMEN COMPULSORY SERVICES","HEADCLERK COMPULSORY SERVICES"]:
             inv = mar.get(v,[])
-            if inv: entries[v] = {"concept":v,"amount":amt(v),"tc":tc_port,"invoices":inv}
+            if inv and amt(v) > 0: entries[v] = {"concept":v,"amount":amt(v),"tc":tc_port,"invoices":inv}
         pest = mar.get("PEST CONTROL",[]) + [(f,None) for f in analysis.get("ammoca",[])]
         if pest: entries["PEST CONTROL"] = {"concept":"PEST CONTROL","amount":amt("PEST CONTROL"),"tc":tc_port,"invoices":pest}
         osro = mar.get("OSRO ANNEX 18",[])
@@ -176,7 +176,7 @@ class NecocheaPort:
         for v in ["CUSTOM HOUSE PERMANENCE","MIGRATION EXPENSES","SANITARY DUES AND FREE PRATIQUE",
                   "GARBAGE COMPULSORY INSPECTION","WATCHMEN COMPULSORY SERVICES","HEADCLERK COMPULSORY SERVICES"]:
             inv = mar.get(v,[])
-            if inv: entries[v] = {"concept":v,"amount":amt(v),"tc":tc_port,"invoices":inv}
+            if inv and amt(v) > 0: entries[v] = {"concept":v,"amount":amt(v),"tc":tc_port,"invoices":inv}
         pest = mar.get("PEST CONTROL",[])
         if pest: entries["PEST CONTROL"] = {"concept":"PEST CONTROL","amount":amt("PEST CONTROL"),"tc":tc_port,"invoices":pest}
         entries["TAX ON CREDIT/DEBIT LAW 25.413"] = {"concept":"TAX ON CREDIT/DEBIT LAW 25.413",
@@ -289,7 +289,7 @@ class SanLorenzoPort:
             "OSRO ANNEX 18",
         ]:
             inv = mar.get(voucher, [])
-            if inv:
+            if inv and amt(voucher) > 0:
                 entries[voucher] = {"concept": voucher, "amount": amt(voucher),
                                     "tc": tc_port, "invoices": inv}
 
@@ -363,6 +363,7 @@ def detect_port(analysis):
         return NecocheaPort()
 
     return BahiaBlancaPort()
+
 
 
 
