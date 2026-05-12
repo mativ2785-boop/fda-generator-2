@@ -22,6 +22,14 @@ class BahiaBlancaPort:
     ]
 
     def build_invoice_map(self, analysis, work_dir, line_amounts):
+        # Normalizar variaciones de spelling en conceptos
+        normalized = {}
+        for k, v in line_amounts.items():
+            key = k.upper()
+            key = key.replace("PRACTIQUE", "PRATIQUE")  # FACA uses Q spelling
+            key = key.replace("FREE PRATIQUE", "FREE PRATIQUE")
+            normalized[key] = v
+        line_amounts = normalized
         def amt(k): return line_amounts.get(k.upper(), 0)
         tc_agency = self._tc_agency(analysis)
         tc_port   = self._tc_port(analysis)
@@ -106,6 +114,14 @@ class NecocheaPort:
     ]
 
     def build_invoice_map(self, analysis, work_dir, line_amounts):
+        # Normalizar variaciones de spelling en conceptos
+        normalized = {}
+        for k, v in line_amounts.items():
+            key = k.upper()
+            key = key.replace("PRACTIQUE", "PRATIQUE")  # FACA uses Q spelling
+            key = key.replace("FREE PRATIQUE", "FREE PRATIQUE")
+            normalized[key] = v
+        line_amounts = normalized
         def amt(k): return line_amounts.get(k.upper(), 0)
         tc_agency = self._tc_agency(analysis)
         tc_port   = self._tc_port(analysis)
@@ -193,6 +209,136 @@ class NecocheaPort:
         return result
 
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SAN LORENZO / ARROYO SECO / GRAL. LAGOS
+# ══════════════════════════════════════════════════════════════════════════════
+
+class SanLorenzoPort:
+    name       = "San Lorenzo Port"
+    short_name = "SAN LORENZO"
+
+    VOUCHER_ORDER = [
+        "AGENCY FEE",
+        "PORT DUES",
+        "ENTRANCE AND LIGHT DUES",
+        "RIVER PLATE PILOTAGE",
+        "RIVER PLATE PILOTAGE (DELAY)",
+        "RIVER PLATE PILOTAGE ANCHORAGE MANEUVER",
+        "RIVER PARANA PILOTAGE",
+        "RIVER PARANA PILOTAGE (DELAY)",
+        "RIVER PARANA PILOTAGE ANCHORAGE MANEUVER",
+        "PORT PILOTAGE",
+        "PORT PILOTAGE (DELAY)",
+        "LAUNCH SERVICES FOR CLEARANCE (AT ROADS)",
+        "LAUNCH SERVICES AT ZONA COMUN",
+        "MOORING & UNMOORING SERVICES",
+        "CUSTOM HOUSE EXPENSES",
+        "CUSTOM HOUSE PERMANENCE",
+        "CUSTOM HOUSE EXPENSE (CARGO)",
+        "NAVIGATION CENTER CONTRIBUTION",
+        "MIGRATION EXPENSES",
+        "SANITARY DUES AND FREE PRATIQUE",
+        "GARBAGE COMPULSORY INSPECTION",
+        "MANDATORY HOLDS INSPECTION",
+        "MANDATORY HOLDS RE-INSPECTION",
+        "HEADCLERK COMPULSORY SERVICES",
+        "FULL ON HIRE / BQS SURVEY",
+        "BQS EXPENSES",
+        "GAS FREE INSPECTION",
+        "PEST CONTROL",
+        "TAX ON CREDIT/DEBIT LAW 25.413",
+        "TOLL DUES (CARP)",
+        "PILOT LAUNCH TRANSPORTATION RIVER PLATE",
+        "TOLL DUES (AGP)",
+    ]
+
+    def build_invoice_map(self, analysis, work_dir, line_amounts):
+        # Normalizar variaciones de spelling en conceptos
+        normalized = {}
+        for k, v in line_amounts.items():
+            key = k.upper()
+            key = key.replace("PRACTIQUE", "PRATIQUE")  # FACA uses Q spelling
+            key = key.replace("FREE PRATIQUE", "FREE PRATIQUE")
+            normalized[key] = v
+        line_amounts = normalized
+        def amt(k): return line_amounts.get(k.upper(), 0)
+        tc_agency = self._tc_agency(analysis)
+        tc_port   = self._tc_port(analysis)
+        mar       = self._mar_inv(analysis)
+        entries   = {}
+
+        # Agency Fee
+        entries["AGENCY FEE"] = {
+            "concept": "AGENCY FEE",
+            "amount":  next((f.get("total",0) for f in analysis["facbs"] if f.get("type")=="agency"), 0),
+            "tc": tc_agency, "invoices": [], "solo": True,
+        }
+
+        # Maritime vouchers
+        for voucher in [
+            "CUSTOM HOUSE EXPENSES",
+            "CUSTOM HOUSE PERMANENCE",
+            "CUSTOM HOUSE EXPENSE (CARGO)",
+            "MIGRATION EXPENSES",
+            "SANITARY DUES AND FREE PRATIQUE",
+            "GARBAGE COMPULSORY INSPECTION",
+            "HEADCLERK COMPULSORY SERVICES",
+            "WATCHMEN COMPULSORY SERVICES",
+            "PEST CONTROL",
+            "OSRO ANNEX 18",
+        ]:
+            inv = mar.get(voucher, [])
+            if inv:
+                entries[voucher] = {"concept": voucher, "amount": amt(voucher),
+                                    "tc": tc_port, "invoices": inv}
+
+        # Navigation Center Contribution — Maritime page or standalone
+        nav = mar.get("NAVIGATION CENTER CONTRIBUTION", [])
+        nav_files = [(f, None) for f in analysis.get("centro_nav", [])]
+        if nav or nav_files:
+            entries["NAVIGATION CENTER CONTRIBUTION"] = {
+                "concept": "NAVIGATION CENTER CONTRIBUTION",
+                "amount":  amt("NAVIGATION CENTER CONTRIBUTION"),
+                "tc": tc_port, "invoices": nav + nav_files,
+            }
+
+        # Tax — siempre último
+        entries["TAX ON CREDIT/DEBIT LAW 25.413"] = {
+            "concept": "TAX ON CREDIT/DEBIT LAW 25.413",
+            "amount":  amt("TAX ON CREDIT/DEBIT LAW 25.413"),
+            "tc": tc_port, "invoices": [], "solo": True,
+        }
+
+        # Fallback: cualquier línea de la FACB sin voucher → crear voucher
+        for concept, amount in line_amounts.items():
+            if concept not in entries and amount > 0 and concept in self.VOUCHER_ORDER:
+                entries[concept] = {"concept": concept, "amount": amount,
+                                    "tc": tc_port, "invoices": []}
+
+        return [entries[v] for v in self.VOUCHER_ORDER if v in entries]
+
+    def _tc_agency(self, a):
+        keys = sorted(a["tc_groups"].keys())
+        return next((f["tc"] for f in a["facbs"] if f.get("type")=="agency"),
+                    keys[0] if keys else 1407.0)
+    def _tc_port(self, a):
+        return next((f["tc"] for f in a["facbs"] if f.get("type")=="port_expenses"),
+                    self._tc_agency(a))
+    def _mar_inv(self, analysis, exclude_mooring_img=True):
+        mar_pages = {}
+        for m in analysis.get("maritime", []):
+            for pg in m["pages"]:
+                v, cat = pg.get("voucher"), pg.get("category", "")
+                if exclude_mooring_img and cat == "mooring_img": continue
+                if v: mar_pages.setdefault(v, []).append((m["filename"], pg["page"]))
+        result = {}
+        for v, pairs in mar_pages.items():
+            merged = {}
+            for fname, pg in pairs: merged.setdefault(fname, []).append(pg)
+            result[v] = [(f, sorted(set(pgs))) for f, pgs in merged.items()]
+        return result
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  DETECCIÓN AUTOMÁTICA DE PUERTO
 # ══════════════════════════════════════════════════════════════════════════════
@@ -208,6 +354,9 @@ def detect_port(analysis):
         return NecocheaPort()
     if "BAHIA BLANCA" in port_str or "BAHÍA BLANCA" in port_str:
         return BahiaBlancaPort()
+
+    if "SAN LORENZO" in port_str or "ARROYO SECO" in port_str or "GRAL. LAGOS" in port_str:
+        return SanLorenzoPort()
 
     # Fallback por proveedores detectados
     if analysis.get("consorcio_quequen") or analysis.get("melluso") or analysis.get("pilotaje"):
