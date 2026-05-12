@@ -337,6 +337,24 @@ def extract_facb(pdf_path):
     if m:
         d["vessel"] = "M/V " + m.group(1).strip()
 
+    # Datos bancarios de la factura
+    if "Santander" in text:
+        d["bank_name"]    = "Santander Argentina"
+        m_acct = re.search(r"Account Number:\s*\$?([\d\-/]+)", text)
+        m_cbu  = re.search(r"CBU:\s*([\d]+)", text)
+        m_bene = re.search(r"Beneficiary: ([^\n]+)", text)
+        m_cuit = re.search(r"CUIT:\s*([\d\-]+)", text)
+        if m_acct: d["bank_account"] = m_acct.group(1).strip()
+        if m_cbu:  d["bank_cbu"]     = m_cbu.group(1).strip()
+        if m_bene: d["bank_beneficiary"] = m_bene.group(1).strip()
+        if m_cuit: d["bank_cuit"]    = m_cuit.group(1).strip()
+    elif "Citibank" in text:
+        d["bank_name"]        = "Citibank N.A., New York Branch"
+        d["bank_aba"]         = "21000089"
+        d["bank_swift"]       = "CITIUS33"
+        d["bank_account"]     = "36404074"
+        d["bank_beneficiary"] = "INDEPENDENT SHIP AGENTS S.A."
+
     # Puerto desde FACB/FACA
     if "NECOCHEA PORT" in text.upper():
         d["port"] = "Necochea Port"
