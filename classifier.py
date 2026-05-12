@@ -308,10 +308,15 @@ def extract_facb(pdf_path):
     if m:
         d["tc"] = float(m.group(1).replace(",", ""))
 
-    # Total: buscar patrón TOTAL USD o SubTotal USD
-    m = re.search(r"(?:TOTAL|SubTotal)\s+USD\s+([\d,]+\.?\d*)", text)
-    if m:
-        d["total"] = float(m.group(1).replace(",", ""))
+    # Total USD — FACBs: SubTotal=Total. FACAs (A00003): TOTAL incluye impuestos.
+    if "A00003" in text:
+        nums = [l.strip() for l in text.split("\n") if re.match(r"^[\d,]+\.\d{2}$", l.strip())]
+        if nums:
+            d["total"] = float(nums[-1].replace(",", ""))
+    else:
+        m = re.search(r"(?:TOTAL|SubTotal)\s+USD\s+([\d,]+\.?\d*)", text)
+        if m:
+            d["total"] = float(m.group(1).replace(",", ""))
 
     if "AGENCY FEE" in text.upper():
         d["type"]  = "agency"
@@ -475,6 +480,7 @@ def analyze(work_dir):
     result["puerto_mariel"].sort()
 
     return result
+
 
 
 
