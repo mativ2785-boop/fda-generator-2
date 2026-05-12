@@ -219,6 +219,14 @@ function render(a) {
     ms.style.display = "block";
     const cats = [
       ["AGENCY FEE","Agency Fee"],
+      ["PORT DUES","Port Dues"],
+      ["ENTRANCE AND LIGHT DUES","Entrance and Light Dues"],
+      ["TOLL DUES","Toll Dues"],
+      ["PORT PILOTAGE","Port Pilotage"],
+      ["PORT PILOTAGE (DELAY)","Port Pilotage (Delay)"],
+      ["MOORING & UNMOORING SERVICES","Mooring & Unmooring"],
+      ["SHORE GANGWAY","Shore Gangway"],
+      ["TOWAGE SERVICES","Towage Services"],
       ["CUSTOM HOUSE EXPENSES","Custom House Expenses"],
       ["CUSTOM HOUSE PERMANENCE","Custom House Permanence"],
       ["CUSTOM HOUSE (BUNKERING)","Custom House (Bunkering)"],
@@ -227,10 +235,9 @@ function render(a) {
       ["GARBAGE COMPULSORY INSPECTION","Garbage Inspection"],
       ["WATCHMEN COMPULSORY SERVICES","Watchmen Services"],
       ["HEADCLERK COMPULSORY SERVICES","Headclerk Services"],
-      ["MOORING & UNMOORING SERVICES","Mooring & Unmooring"],
-      ["SHORE GANGWAY","Shore Gangway"],
       ["PEST CONTROL","Pest Control"],
       ["OSRO ANNEX 18","OSRO Annex 18"],
+      ["TAX ON CREDIT/DEBIT LAW 25.413","Tax on Credit/Debit"],
       ["skip","— OMITIR —"],
     ].map(([v,t])=>`<option value="${v}">${t}</option>`).join("");
 
@@ -385,5 +392,6 @@ def generate():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 
