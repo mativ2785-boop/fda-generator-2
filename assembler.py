@@ -130,7 +130,7 @@ def make_voucher(concept, amount, tc, vessel, sailed, port="BAHIA BLANCA"):
 
 # ── Summary page ──────────────────────────────────────────────────────────────
 
-def make_summary(vessel, port, sailed, date, client, advance, tc_groups):
+def make_summary(vessel, port, sailed, date, client, advance, tc_groups, bank_info=None):
     buf = io.BytesIO()
     c   = canvas.Canvas(buf, pagesize=A4)
 
@@ -241,17 +241,30 @@ def make_summary(vessel, port, sailed, date, client, advance, tc_groups):
 
     # Bank details — alineado a la izquierda
     bk_y = ry-80; bk_w = 275; bk_x = 40
+
+    # Usar datos bancarios de la factura si están disponibles
+    if bank_info and bank_info.get("bank_name") == "Santander Argentina":
+        bank_rows = [
+            ("Bank:",        "Santander Argentina"),
+            ("Account No:",  bank_info.get("bank_account", "760-000975/5")),
+            ("CBU:",         bank_info.get("bank_cbu", "0720760220000000097554")),
+            ("Beneficiary:", bank_info.get("bank_beneficiary", "Independent Ship Agents S.A.")),
+            ("CUIT:",        bank_info.get("bank_cuit", "30-70813875-0")),
+        ]
+    else:
+        bank_rows = [
+            ("Bank:",        "Citibank N.A., New York Branch"),
+            ("Address:",     "111 Wall Street, New York, NY 10043"),
+            ("ABA #:",       "21000089"),
+            ("SWIFT:",       "CITIUS33"),
+            ("Account No:",  "36404074"),
+            ("Beneficiary:", "INDEPENDENT SHIP AGENTS S.A."),
+        ]
+
     c.setFillColor(ISA_BLUE); c.rect(bk_x, bk_y, bk_w, 18, fill=1, stroke=0)
     c.setFillColor(colors.white); c.setFont("Helvetica-Bold", 9)
     c.drawString(bk_x+8, bk_y+5, "Bank Details"); bk_y -= 18
-    for lbl, val in [
-        ("Bank:",        "Citibank N.A., New York Branch"),
-        ("Address:",     "111 Wall Street, New York, NY 10043"),
-        ("ABA #:",       "21000089"),
-        ("SWIFT:",       "CITIUS33"),
-        ("Account No:",  "36404074"),
-        ("Beneficiary:", "INDEPENDENT SHIP AGENTS S.A."),
-    ]:
+    for lbl, val in bank_rows:
         c.setFillColor(colors.white); c.setStrokeColor(colors.HexColor("#CCCCCC"))
         c.rect(bk_x, bk_y-16, bk_w, 16, fill=1, stroke=1)
         c.setFillColor(colors.black); c.setFont("Helvetica", 8)
@@ -453,7 +466,13 @@ def build_fda(analysis, work_dir, output_path, advance, date):
 
     # 1. Sumario
     print("  [1] Sumario...")
-    for pg in make_summary(vessel, port, sailed, date, client, advance, tc_groups).pages:
+    # Extraer datos bancarios de la primera FACA/FACB
+    bank_info = None
+    for facb in analysis.get("facbs", []):
+        if facb.get("bank_name"):
+            bank_info = facb
+            break
+    for pg in make_summary(vessel, port, sailed, date, client, advance, tc_groups, bank_info).pages:
         writer.add_page(pg)
 
     # 2. SOF
@@ -519,6 +538,7 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         "vessel":    vessel,
         "client":    client,
     }
+
 
 
 
