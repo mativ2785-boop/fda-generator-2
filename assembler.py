@@ -1,13 +1,13 @@
 """
-assembler.py  —  ISA FDA Generator · Bahia Blanca
+assembler.py  —  ISA FDA Generator
 Construye el invoice_map y ensambla el PDF final.
+Soporta: Bahia Blanca, Necochea, San Lorenzo / Arroyo Seco / Gral. Lagos
 """
 
 import os, io, re, sys
 import fitz  # PyMuPDF
 from pypdf import PdfWriter, PdfReader
 
-# Importar sistema de puertos desde ports.py (archivo único, compatible con Render)
 try:
     from ports import detect_port as _detect_port_fn
 except ImportError:
@@ -17,36 +17,14 @@ except ImportError:
 
 def _detect_port(analysis):
     return _detect_port_fn(analysis)
+
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
 
 PW, PH   = A4
-ISA_BLUE = colors.HexColor("#1428B4")
+ISA_BLUE = colors.HexColor("#3B5490")
 LOGO     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo_isa.png")
-
-# Orden canónico de vouchers en Bahia Blanca
-VOUCHER_ORDER = [
-    "AGENCY FEE",
-    "PORT DUES",
-    "PERMANENCE DUES",
-    "TOLL DUES",
-    "PORT PILOTAGE",
-    "PORT PILOTAGE (DELAY)",
-    "MOORING & UNMOORING SERVICES",
-    "TOWAGE SERVICES",
-    "CUSTOM HOUSE EXPENSES",
-    "CUSTOM HOUSE PERMANENCE",
-    "CUSTOM HOUSE (BUNKERING)",
-    "MIGRATION EXPENSES",
-    "SANITARY DUES AND FREE PRATIQUE",
-    "GARBAGE COMPULSORY INSPECTION",
-    "WATCHMEN COMPULSORY SERVICES",
-    "HEADCLERK COMPULSORY SERVICES",
-    "PEST CONTROL",
-    "OSRO ANNEX 18",
-    "TAX ON CREDIT/DEBIT LAW 25.413",
-]
 
 MONTHS_ABBR = {
     "January":"Jan","February":"Feb","March":"Mar","April":"Apr",
@@ -58,12 +36,10 @@ MONTHS_ABBR = {
 # ── PDF helpers ───────────────────────────────────────────────────────────────
 
 def fmt_amt(v):
-    """Enteros sin .00, decimales con 2 cifras (THE ETERNAL style)."""
     return f"{int(v):,}" if v == int(v) else f"{v:,.2f}"
 
 
 def add_pdf(writer, path, pages=None):
-    """Agrega páginas de un PDF al writer. pages=None → todas."""
     if not os.path.exists(path):
         print(f"    ⚠ No encontrado: {os.path.basename(path)}")
         return 0
@@ -78,171 +54,233 @@ def add_pdf(writer, path, pages=None):
     return n
 
 
+# ── Logo extractor ────────────────────────────────────────────────────────────
+
+def extract_logo_from_facb(facb_path, dest_path):
+    """
+    Extrae el logo ISA desde una FACB como crop de la página.
+    El logo aparece en la parte superior-izquierda de la FACB.
+    """
+    try:
+        doc  = fitz.open(facb_path)
+        pg   = doc[0]
+        mat  = fitz.Matrix(4, 4)
+        clip = fitz.Rect(60, 30, 210, 135)
+        pix  = pg.get_pixmap(matrix=mat, clip=clip)
+        pix.save(dest_path)
+        return True
+    except Exception:
+        return False
+
+
 # ── Voucher page ──────────────────────────────────────────────────────────────
 
 def make_voucher(concept, amount, tc, vessel, sailed, port="BAHIA BLANCA"):
     buf = io.BytesIO()
     c   = canvas.Canvas(buf, pagesize=A4)
 
-    # Logo centrado
-    lw = lh = 120
+    # Logo centrado arriba
+    lw = lh = 100
     if os.path.exists(LOGO):
-        c.drawImage(LOGO, (PW-lw)/2, PH-20-lh, width=lw, height=lh,
+        c.drawImage(LOGO, (PW - lw) / 2, PH - 20 - lh, width=lw, height=lh,
                     preserveAspectRatio=True, mask="auto")
 
     port_label = port.upper().replace(" PORT", "")
     c.setFont("Helvetica-Bold", 16)
     c.setFillColor(colors.black)
-    c.drawString(80, PH-182, port_label)
+    c.drawString(80, PH - 182, port_label)
 
     c.setLineWidth(1)
-    c.line(80, PH-232, 520, PH-232)
+    c.line(80, PH - 232, 520, PH - 232)
 
-    vessel_short = vessel.replace("M/V ","").replace("m/v ","")
+    vessel_short = vessel.replace("M/V ", "").replace("m/v ", "")
     c.setFont("Helvetica-Bold", 24)
-    c.drawString(80, PH-257, f"VESSEL: {vessel_short}")
+    c.drawString(80, PH - 257, f"VESSEL: {vessel_short}")
 
-    sailed_s = sailed
+    sailed_s = sailed or ""
     for full, abbr in MONTHS_ABBR.items():
         sailed_s = sailed_s.replace(full, abbr)
     c.setFont("Helvetica-Bold", 16)
-    c.drawString(80, PH-277, f"SAILED: {sailed_s}")
-    c.drawString(80, PH-297, f"RATE OF EXCHANGE: {tc:g}")
+    c.drawString(80, PH - 277, f"SAILED: {sailed_s}")
+    c.drawString(80, PH - 297, f"RATE OF EXCHANGE: {tc:g}")
 
-    c.line(80, PH-302, 520, PH-302)
+    c.line(80, PH - 302, 520, PH - 302)
 
     c.setFont("Helvetica-Bold", 18)
-    c.drawString(80, PH-382, concept)
+    c.drawString(80, PH - 382, concept)
 
     c.setFont("Helvetica-Bold", 28)
-    c.drawCentredString(PW/2, PH-482, f"USD {fmt_amt(amount)}")
+    c.drawCentredString(PW / 2, PH - 482, f"USD {fmt_amt(amount)}")
 
     c.setFont("Helvetica", 8)
     c.setFillColor(colors.black)
-    c.drawCentredString(PW/2, PH-742,
+    c.drawCentredString(PW / 2, PH - 742,
         "Av. del Libertador 602 - 9th Floor - C1001ABT - Buenos Aires - Argentina")
-    c.drawCentredString(PW/2, PH-752,
+    c.drawCentredString(PW / 2, PH - 752,
         "Phone (+54 11) 4819-4100 - Fax (+54 11) 4819-4101 - disbursements@isa-agents.com.ar")
 
-    c.save(); buf.seek(0)
+    c.save()
+    buf.seek(0)
     return PdfReader(buf)
 
 
 # ── Summary page ──────────────────────────────────────────────────────────────
 
 def make_summary(vessel, port, sailed, date, client, advance, tc_groups, bank_info=None):
+    """
+    Genera la página de sumario ISA.
+    Orden en tabla: NCBs primero (todos), luego agency fee, luego port expenses.
+    """
     buf = io.BytesIO()
     c   = canvas.Canvas(buf, pagesize=A4)
 
-    # Header — Logo grande arriba a la derecha
-    lw = lh = 120
+    # Logo arriba a la derecha
+    lw = lh = 100
     if os.path.exists(LOGO):
-        c.drawImage(LOGO, PW-40-lw, PH-20-lh, width=lw, height=lh,
+        c.drawImage(LOGO, PW - 40 - lw, PH - 20 - lh, width=lw, height=lh,
                     preserveAspectRatio=True, mask="auto")
 
-    # Fecha "Buenos Aires, DD Month YYYY" alineada a la izquierda
-    c.setFont("Helvetica", 9); c.setFillColor(colors.black)
-    c.drawString(40, PH-150, f"Buenos Aires, {date}")
+    c.setFont("Helvetica-Oblique", 11)
+    c.setFillColor(ISA_BLUE)
+    c.drawString(40, PH - 80, "Disbursement Summary")
 
-    # Disbursement Summary a la izquierda
-    c.setFont("Helvetica-Oblique", 11); c.setFillColor(ISA_BLUE)
-    c.drawString(40, PH-80, "Disbursement Summary")
+    c.setFont("Helvetica", 9)
+    c.setFillColor(colors.black)
+    c.drawString(40, PH - 150, f"Buenos Aires, {date}")
 
     c.setStrokeColor(ISA_BLUE)
-    c.setLineWidth(3); c.line(40, PH-165, 555, PH-165)
-    c.setLineWidth(1); c.line(40, PH-169, 555, PH-169)
+    c.setLineWidth(3)
+    c.line(40, PH - 165, 555, PH - 165)
+    c.setLineWidth(1)
+    c.line(40, PH - 169, 555, PH - 169)
 
-    # Vessel data
-    y0 = PH-188; RH = 20
+    y0 = PH - 188
+    RH = 20
     for i, (lbl, val) in enumerate([("To:", client), ("Vessel:", vessel), ("Port:", port)]):
-        bg = colors.HexColor("#F2F2F2") if i%2==0 else colors.white
-        c.setFillColor(bg); c.rect(40, y0-RH*(i+1), 260, RH, fill=1, stroke=0)
+        bg = colors.HexColor("#F2F2F2") if i % 2 == 0 else colors.white
+        c.setFillColor(bg)
+        c.rect(40, y0 - RH * (i + 1), 260, RH, fill=1, stroke=0)
         c.setFillColor(colors.black)
-        c.setFont("Helvetica-Bold", 9); c.drawString(47, y0-RH*(i+1)+6, lbl)
-        c.setFont("Helvetica-Bold" if lbl=="To:" else "Helvetica", 9)
-        c.drawString(95, y0-RH*(i+1)+6, val)
-    for i, (lbl, val) in enumerate([("Sailed:", sailed), ("Date:", date)]):
-        bg = colors.HexColor("#F2F2F2") if i%2==0 else colors.white
-        c.setFillColor(bg); c.rect(310, y0-RH*(i+1), 245, RH, fill=1, stroke=0)
-        c.setFillColor(colors.black)
-        c.setFont("Helvetica-Bold", 9); c.drawString(317, y0-RH*(i+1)+6, lbl)
-        c.setFont("Helvetica", 9);      c.drawString(360, y0-RH*(i+1)+6, val)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(47, y0 - RH * (i + 1) + 6, lbl)
+        c.setFont("Helvetica-Bold" if lbl == "To:" else "Helvetica", 9)
+        c.drawString(95, y0 - RH * (i + 1) + 6, val)
 
-    # Intro
-    ty = y0-RH*3-18
-    c.setFont("Helvetica", 9); c.setFillColor(colors.black)
+    for i, (lbl, val) in enumerate([("Sailed:", sailed or ""), ("Date:", date)]):
+        bg = colors.HexColor("#F2F2F2") if i % 2 == 0 else colors.white
+        c.setFillColor(bg)
+        c.rect(310, y0 - RH * (i + 1), 245, RH, fill=1, stroke=0)
+        c.setFillColor(colors.black)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(317, y0 - RH * (i + 1) + 6, lbl)
+        c.setFont("Helvetica", 9)
+        c.drawString(360, y0 - RH * (i + 1) + 6, val)
+
+    ty = y0 - RH * 3 - 18
+    c.setFont("Helvetica", 9)
+    c.setFillColor(colors.black)
     c.drawString(40, ty, "Dear Sir / Madam,")
-    c.drawString(40, ty-14,
+    c.drawString(40, ty - 14,
         "Please find our final disbursement account for the operations of the concerning vessel during the call at ref. port.")
 
-    # Invoice table
-    tbl_top = ty-35; HDR_H = ROW_H = 18
+    tbl_top = ty - 35
+    HDR_H = ROW_H = 18
+
     c.setFillColor(ISA_BLUE)
-    c.rect(40, tbl_top-HDR_H, 515, HDR_H, fill=1, stroke=0)
-    c.setFillColor(colors.white); c.setFont("Helvetica-Bold", 9)
-    for lbl, x in zip(["Invoice Number","Concept","Port","USD Amount"],
+    c.rect(40, tbl_top - HDR_H, 515, HDR_H, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 9)
+    for lbl, x in zip(["Invoice Number", "Concept", "Port", "USD Amount"],
                        [44, 174, 374, 474]):
-        c.drawString(x, tbl_top-HDR_H+5, lbl)
+        c.drawString(x, tbl_top - HDR_H + 5, lbl)
 
-    ry = tbl_top-HDR_H; total = 0.0; row_i = 0
-    for tc, facbs in sorted(tc_groups.items()):
-        for (num, lbl, amt) in facbs:
-            bg = colors.white if row_i%2==0 else colors.HexColor("#F2F2F2")
-            c.setFillColor(bg); c.rect(40, ry-ROW_H, 515, ROW_H, fill=1, stroke=0)
-            is_ncb = "crédito" in lbl.lower() or "ncb" in lbl.lower()
-            c.setFillColor(colors.red if is_ncb else colors.black)
-            c.setFont("Helvetica", 9)
-            c.drawString(44,  ry-ROW_H+5, f"Invoice {num}")
-            c.drawString(174, ry-ROW_H+5, lbl)
-            c.drawString(374, ry-ROW_H+5, "Bahia Blanca")
-            c.drawRightString(555, ry-ROW_H+5, f"{amt:,.2f}")
-            total += amt; ry -= ROW_H; row_i += 1
+    port_short = port.replace(" Port", "").replace(" port", "")
 
-    # Total
-    c.setFillColor(colors.white); c.rect(40, ry-ROW_H, 515, ROW_H, fill=1, stroke=0)
-    c.setFillColor(colors.black); c.setFont("Helvetica-Bold", 9)
-    c.drawRightString(469, ry-ROW_H+5, "Total Expenses")
-    c.drawRightString(555, ry-ROW_H+5, f"{total:,.2f}"); ry -= ROW_H
+    # Orden: NCBs primero (de todos los TC), luego agency, luego port_expenses
+    all_ncbs     = []
+    all_agency   = []
+    all_port_exp = []
+    for tc in sorted(tc_groups.keys()):
+        for (num, lbl, amt) in tc_groups[tc]:
+            if "crédito" in lbl.lower() or "ncb" in lbl.lower():
+                all_ncbs.append((num, lbl, amt))
+            elif "agency" in lbl.lower():
+                all_agency.append((num, lbl, amt))
+            else:
+                all_port_exp.append((num, lbl, amt))
+    all_rows = all_ncbs + all_agency + all_port_exp
 
-    # Advance
+    ry = tbl_top - HDR_H
+    total = 0.0
+    for row_i, (num, lbl, amt) in enumerate(all_rows):
+        bg = colors.white if row_i % 2 == 0 else colors.HexColor("#F2F2F2")
+        c.setFillColor(bg)
+        c.rect(40, ry - ROW_H, 515, ROW_H, fill=1, stroke=0)
+        is_ncb = "crédito" in lbl.lower() or "ncb" in lbl.lower()
+        c.setFillColor(colors.red if is_ncb else colors.black)
+        c.setFont("Helvetica", 9)
+        c.drawString(44,  ry - ROW_H + 5, f"Invoice {num}")
+        c.drawString(174, ry - ROW_H + 5, lbl)
+        c.drawString(374, ry - ROW_H + 5, port_short)
+        if is_ncb:
+            c.drawRightString(555, ry - ROW_H + 5, f"({fmt_amt(abs(amt))})")
+        else:
+            c.drawRightString(555, ry - ROW_H + 5, fmt_amt(amt))
+        total += amt
+        ry -= ROW_H
+
+    # Total Expenses
+    c.setFillColor(colors.white)
+    c.rect(40, ry - ROW_H, 515, ROW_H, fill=1, stroke=0)
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawRightString(469, ry - ROW_H + 5, "Total Expenses")
+    c.drawRightString(555, ry - ROW_H + 5, fmt_amt(total))
+    ry -= ROW_H
+
     if advance > 0:
-        c.setFillColor(colors.white); c.rect(40, ry-ROW_H, 515, ROW_H, fill=1, stroke=0)
-        c.setFont("Helvetica", 9); c.setFillColor(colors.black)
-        c.drawString(174, ry-ROW_H+5, f"Less advanced by {client}")
+        c.setFillColor(colors.HexColor("#F2F2F2"))
+        c.rect(40, ry - ROW_H, 515, ROW_H, fill=1, stroke=0)
+        c.setFont("Helvetica", 9)
+        c.setFillColor(colors.black)
+        c.drawString(174, ry - ROW_H + 5, f"Less advanced by {client}")
         c.setFillColor(colors.red)
-        c.drawRightString(555, ry-ROW_H+5, f"({advance:,.2f})"); ry -= ROW_H
+        c.drawRightString(555, ry - ROW_H + 5, f"({fmt_amt(advance)})")
+        ry -= ROW_H
 
-    # Balance
     balance = total - advance
     label   = "Total due to ISA" if balance >= 0 else f"Total due to {client}"
     c.setFillColor(ISA_BLUE if balance >= 0 else colors.red)
-    c.rect(40, ry-ROW_H, 515, ROW_H, fill=1, stroke=0)
-    c.setFillColor(colors.white); c.setFont("Helvetica-Bold", 10)
-    c.drawString(44, ry-ROW_H+5, label)
-    c.drawRightString(555, ry-ROW_H+5, f"{abs(balance):,.2f}"); ry -= ROW_H
+    c.rect(40, ry - ROW_H, 515, ROW_H, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(44, ry - ROW_H + 5, label)
+    c.drawRightString(555, ry - ROW_H + 5, fmt_amt(abs(balance)))
+    ry -= ROW_H
 
-    # Closing
-    c.setFillColor(colors.black); c.setFont("Helvetica", 9)
-    c.drawString(40, ry-18,
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica", 9)
+    c.drawString(40, ry - 18,
         "Please do not hesitate to contact us if you need to elaborate on this disbursement.")
-    c.drawString(40, ry-36,
+    c.drawString(40, ry - 36,
         "We thank you very much for having chosen us as agents. We trust our performance has reached your requirements, and we look")
-    c.drawString(40, ry-48, "forward to be of assistance to you in the future.")
+    c.drawString(40, ry - 48, "forward to be of assistance to you in the future.")
 
-    # Footer ISA — dirección + teléfono + email + web
     c.setStrokeColor(colors.HexColor("#CCCCCC"))
     c.setLineWidth(0.5)
     c.line(40, 55, 555, 55)
-    c.setFont("Helvetica-Bold", 8); c.setFillColor(ISA_BLUE)
+    c.setFont("Helvetica-Bold", 8)
+    c.setFillColor(ISA_BLUE)
     c.drawString(40, 44, "Independent Ship Agents S.A.")
-    c.setFont("Helvetica", 8); c.setFillColor(colors.black)
+    c.setFont("Helvetica", 8)
+    c.setFillColor(colors.black)
     c.drawString(40, 34, "Av. del Libertador 602, 9th Floor  |  C1001ABT Buenos Aires, Argentina")
     c.drawString(40, 24, "Tel: (+54 11) 4819-4100  |  isa@isa-agents.com.ar  |  www.isa-agents.com.ar")
 
-    # Bank details — alineado a la izquierda
-    bk_y = ry-80; bk_w = 275; bk_x = 40
+    bk_y = ry - 80
+    bk_w = 275
+    bk_x = 40
 
-    # Usar datos bancarios de la factura si están disponibles
     if bank_info and bank_info.get("bank_name") == "Santander Argentina":
         bank_rows = [
             ("Bank:",        "Santander Argentina"),
@@ -261,31 +299,35 @@ def make_summary(vessel, port, sailed, date, client, advance, tc_groups, bank_in
             ("Beneficiary:", "INDEPENDENT SHIP AGENTS S.A."),
         ]
 
-    c.setFillColor(ISA_BLUE); c.rect(bk_x, bk_y, bk_w, 18, fill=1, stroke=0)
-    c.setFillColor(colors.white); c.setFont("Helvetica-Bold", 9)
-    c.drawString(bk_x+8, bk_y+5, "Bank Details"); bk_y -= 18
+    c.setFillColor(ISA_BLUE)
+    c.rect(bk_x, bk_y, bk_w, 18, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(bk_x + 8, bk_y + 5, "Bank Details")
+    bk_y -= 18
     for lbl, val in bank_rows:
-        c.setFillColor(colors.white); c.setStrokeColor(colors.HexColor("#CCCCCC"))
-        c.rect(bk_x, bk_y-16, bk_w, 16, fill=1, stroke=1)
-        c.setFillColor(colors.black); c.setFont("Helvetica", 8)
-        c.drawString(bk_x+8, bk_y-11, lbl)
-        c.setFont("Helvetica-Bold" if lbl=="Beneficiary:" else "Helvetica", 8)
-        c.drawString(bk_x+80, bk_y-11, val); bk_y -= 16
+        c.setFillColor(colors.white)
+        c.setStrokeColor(colors.HexColor("#CCCCCC"))
+        c.rect(bk_x, bk_y - 16, bk_w, 16, fill=1, stroke=1)
+        c.setFillColor(colors.black)
+        c.setFont("Helvetica", 8)
+        c.drawString(bk_x + 8, bk_y - 11, lbl)
+        c.setFont("Helvetica-Bold" if lbl == "Beneficiary:" else "Helvetica", 8)
+        c.drawString(bk_x + 80, bk_y - 11, val)
+        bk_y -= 16
 
-    c.save(); buf.seek(0)
+    c.save()
+    buf.seek(0)
     return PdfReader(buf)
 
 
-# ── Invoice map ───────────────────────────────────────────────────────────────
+# ── Extract line amounts from FACB ────────────────────────────────────────────
 
 def extract_facb_line_amounts(pdf_path):
     """
     Extrae montos por concepto de una FACB de port expenses.
-    El formato del PDF tiene cada campo en una línea separada:
-    N° / CONCEPTO / 1.00 / MONTO / MONTO_FORMATEADO
-    Devuelve dict {CONCEPTO: monto}
+    Formato: N° / CONCEPTO / 1.00 / MONTO
     """
-    import re
     amounts = {}
     try:
         doc   = fitz.open(pdf_path)
@@ -293,7 +335,6 @@ def extract_facb_line_amounts(pdf_path):
         lines = [l.strip() for l in text.split("\n")]
         i = 0
         while i < len(lines):
-            # Buscar número de línea standalone (1, 2, 3...)
             if re.match(r"^\d+$", lines[i]) and i + 3 < len(lines):
                 concept = lines[i + 1].strip().upper()
                 if lines[i + 2] == "1.00":
@@ -309,135 +350,35 @@ def extract_facb_line_amounts(pdf_path):
         pass
     return amounts
 
-def build_invoice_map(analysis, work_dir):
+
+# ── Normalize line_amounts keys ───────────────────────────────────────────────
+
+def normalize_line_amounts(line_amounts):
     """
-    Construye lista ordenada de vouchers [{concept, amount, tc, invoices, solo}].
+    Normaliza las claves de line_amounts para que coincidan con los nombres
+    canónicos de los vouchers (truncados en FACBs, variaciones de spelling, etc.)
     """
-    tc_keys   = sorted(analysis["tc_groups"].keys())
-    tc_agency = next((f["tc"] for f in analysis["facbs"] if f.get("type")=="agency"),
-                     tc_keys[0] if tc_keys else 1373.5)
-    tc_port   = next((f["tc"] for f in analysis["facbs"] if f.get("type")=="port_expenses"),
-                     tc_agency)
-
-    # Extraer montos individuales de la FACB de port expenses
-    port_facb = next((f for f in analysis["facbs"] if f.get("type")=="port_expenses"), None)
-    line_amounts = {}
-    if port_facb and port_facb.get("filename"):
-        line_amounts = extract_facb_line_amounts(os.path.join(work_dir, port_facb["filename"]))
-
-    def amt(concept_key):
-        return line_amounts.get(concept_key.upper(), 0)
-
-    # Agrupar páginas Maritime por voucher — excluir mooring_img de Mooring
-    mar_pages = {}
-    for m in analysis["maritime"]:
-        for pg in m["pages"]:
-            v   = pg.get("voucher")
-            cat = pg.get("category", "")
-            if v == "MOORING & UNMOORING SERVICES" and cat == "mooring_img":
-                continue  # Solo incluir página de Amarradores, no imágenes de scan
-            if v:
-                mar_pages.setdefault(v, []).append((m["filename"], pg["page"]))
-
-    def mar_inv(voucher):
-        """Convierte lista plana en [(filename, [sorted_pages])]."""
-        raw = mar_pages.get(voucher, [])
-        merged = {}
-        for fname, pg in raw:
-            merged.setdefault(fname, []).append(pg)
-        return [(f, sorted(set(pgs))) for f, pgs in merged.items()]
-
-    agency_amt = next((f.get("total", 0) for f in analysis["facbs"]
-                       if f.get("type")=="agency"), 0)
-
-    entries = {}
-
-    # Agency Fee
-    entries["AGENCY FEE"] = {
-        "concept": "AGENCY FEE", "amount": agency_amt,
-        "tc": tc_agency, "invoices": [], "solo": True,
-    }
-
-    # Port Dues — primera factura del Consorcio
-    if analysis["consorcio"]:
-        entries["PORT DUES"] = {
-            "concept": "PORT DUES", "amount": amt("PORT DUES"), "tc": tc_port,
-            "invoices": [(analysis["consorcio"][0], None)],
-        }
-
-    # Toll Dues — todas las facturas del Consorcio
-    if analysis["consorcio"]:
-        entries["TOLL DUES"] = {
-            "concept": "TOLL DUES", "amount": amt("TOLL DUES"), "tc": tc_port,
-            "invoices": [(f, None) for f in analysis["consorcio"]],
-        }
-
-    # Port Pilotage — Donmar
-    if analysis["donmar"]:
-        entries["PORT PILOTAGE"] = {
-            "concept": "PORT PILOTAGE", "amount": amt("PORT PILOTAGE"), "tc": tc_port,
-            "invoices": [(f, None) for f in analysis["donmar"]],
-        }
-
-    # Mooring — páginas Maritime + facturas de Amarradores separadas
-    mooring_inv = mar_inv("MOORING & UNMOORING SERVICES")
-    ama_inv     = [(f, None) for f in analysis["amarradores"]]
-    if mooring_inv or ama_inv:
-        entries["MOORING & UNMOORING SERVICES"] = {
-            "concept": "MOORING & UNMOORING SERVICES", "amount": amt("MOORING & UNMOORING SERVICES"), "tc": tc_port,
-            "invoices": mooring_inv + ama_inv,
-        }
-
-    # Towage — Puerto Mariel
-    if analysis["puerto_mariel"]:
-        entries["TOWAGE SERVICES"] = {
-            "concept": "TOWAGE SERVICES", "amount": amt("TOWAGE SERVICES"), "tc": tc_port,
-            "invoices": [(f, None) for f in analysis["puerto_mariel"]],
-        }
-
-    # Maritime vouchers en orden
-    for voucher in [
-        "CUSTOM HOUSE EXPENSES",
-        "CUSTOM HOUSE PERMANENCE",
-        "CUSTOM HOUSE (BUNKERING)",
-        "MIGRATION EXPENSES",
-        "SANITARY DUES AND FREE PRATIQUE",
-        "GARBAGE COMPULSORY INSPECTION",
-        "WATCHMEN COMPULSORY SERVICES",
-        "HEADCLERK COMPULSORY SERVICES",
-    ]:
-        inv = mar_inv(voucher)
-        if inv:
-            entries[voucher] = {
-                "concept": voucher, "amount": amt(voucher), "tc": tc_port,
-                "invoices": inv,
-            }
-
-    # Pest Control — Maritime + ammoca standalone
-    pest_inv  = mar_inv("PEST CONTROL")
-    pest_ama  = [(f, None) for f in analysis["ammoca"]]
-    if pest_inv or pest_ama:
-        entries["PEST CONTROL"] = {
-            "concept": "PEST CONTROL", "amount": amt("PEST CONTROL"), "tc": tc_port,
-            "invoices": pest_inv + pest_ama,
-        }
-
-    # OSRO
-    osro_inv = mar_inv("OSRO ANNEX 18")
-    if osro_inv:
-        entries["OSRO ANNEX 18"] = {
-            "concept": "OSRO ANNEX 18", "amount": amt("OSRO ANNEX 18"), "tc": tc_port,
-            "invoices": osro_inv,
-        }
-
-    # Tax — siempre último
-    entries["TAX ON CREDIT/DEBIT LAW 25.413"] = {
-        "concept": "TAX ON CREDIT/DEBIT LAW 25.413", "amount": amt("TAX ON CREDIT/DEBIT LAW 25.413"),
-        "tc": tc_port, "invoices": [], "solo": True,
-    }
-
-    # Ordenar según VOUCHER_ORDER
-    return [entries[v] for v in VOUCHER_ORDER if v in entries]
+    normalized = {}
+    for k, v in line_amounts.items():
+        key = k.upper().strip()
+        key = key.replace("PRACTIQUE", "PRATIQUE")
+        key = key.replace("CLEARENCE", "CLEARANCE")
+        if key == "RIVER PLATE PILOTAGE ANCHORAGE":
+            key = "RIVER PLATE PILOTAGE ANCHORAGE MANEUVER"
+        if key == "RIVER PARANA PILOTAGE ANCHORAG":
+            key = "RIVER PARANA PILOTAGE ANCHORAGE MANEUVER"
+        if key == "MANDATORY HOLDS INSPECTION AT":
+            key = "MANDATORY HOLDS INSPECTION"
+        if key == "HEADCLERK COMPULSORY":
+            key = "HEADCLERK COMPULSORY SERVICES"
+        if key == "LAUNCH SERVICES FOR CLEARENCE":
+            key = "LAUNCH SERVICES FOR CLEARANCE (AT ROADS)"
+        if key == "LAUNCH SERVICES FOR CLEARANCE":
+            key = "LAUNCH SERVICES FOR CLEARANCE (AT ROADS)"
+        if key == "FULL ON HIRE DELIVERY BUNKER A":
+            key = "FULL ON HIRE / BQS SURVEY"
+        normalized[key] = v
+    return normalized
 
 
 # ── Build FDA ─────────────────────────────────────────────────────────────────
@@ -454,23 +395,38 @@ def build_fda(analysis, work_dir, output_path, advance, date):
     client    = analysis.get("client")  or "CLIENT"
     tc_groups = analysis["tc_groups"]
 
-    fp = lambda f: os.path.join(work_dir, f)
+    fp_fn = lambda f: os.path.join(work_dir, f)
     facb_files = {f["number"]: f["filename"]
                   for f in analysis["facbs"] if f.get("number")}
 
-    # Extraer montos por línea de la FACB de port expenses
-    port_facb = next((f for f in analysis["facbs"] if f.get("type")=="port_expenses"), None)
+    # Extraer logo desde la primera FACB disponible si no existe
+    if not os.path.exists(LOGO):
+        for facb in analysis.get("facbs", []):
+            fname = facb.get("filename")
+            if fname and os.path.exists(fp_fn(fname)):
+                extract_logo_from_facb(fp_fn(fname), LOGO)
+                break
+
+    # Combinar line_amounts de TODAS las FACBs de port_expenses
     line_amounts = {}
-    # Combinar line_amounts de TODAS las FACBs de port_expenses (pueden ser de distintos TC)
     for facb in analysis["facbs"]:
         if facb.get("type") == "port_expenses" and facb.get("filename"):
-            la = extract_facb_line_amounts(fp(facb["filename"]))
+            la = extract_facb_line_amounts(fp_fn(facb["filename"]))
             for k, v in la.items():
                 line_amounts[k] = line_amounts.get(k, 0) + v
+    line_amounts = normalize_line_amounts(line_amounts)
+
+    # Ordenar tc_groups: dentro de cada TC, NCBs primero, luego agency, luego port_expenses
+    for tc in tc_groups:
+        rows = tc_groups[tc]
+        ncbs     = [(n, l, a) for (n, l, a) in rows if "crédito" in l.lower() or "ncb" in l.lower()]
+        agency   = [(n, l, a) for (n, l, a) in rows if "agency" in l.lower()]
+        port_exp = [(n, l, a) for (n, l, a) in rows
+                    if "crédito" not in l.lower() and "ncb" not in l.lower() and "agency" not in l.lower()]
+        tc_groups[tc] = ncbs + agency + port_exp
 
     # 1. Sumario
     print("  [1] Sumario...")
-    # Extraer datos bancarios de la primera FACA/FACB
     bank_info = None
     for facb in analysis.get("facbs", []):
         if facb.get("bank_name"):
@@ -482,14 +438,14 @@ def build_fda(analysis, work_dir, output_path, advance, date):
     # 2. SOF
     if analysis["sof"]:
         print("  [2] SOF...")
-        add_pdf(writer, fp(analysis["sof"]))
+        add_pdf(writer, fp_fn(analysis["sof"]))
 
-    # 3. BNA
+    # 3. BNA — si existe
     if analysis["bna"]:
         print("  [3] BNA...")
-        add_pdf(writer, fp(analysis["bna"]))
+        add_pdf(writer, fp_fn(analysis["bna"]))
 
-    # 4+. FACBs y vouchers — detectar puerto automáticamente
+    # 4+. FACBs y vouchers
     port_config = _detect_port(analysis)
     invoice_map = port_config.build_invoice_map(analysis, work_dir, line_amounts)
     tc_inserted = set()
@@ -498,13 +454,13 @@ def build_fda(analysis, work_dir, output_path, advance, date):
     for entry in invoice_map:
         tc = entry["tc"]
 
-        # Insertar FACBs del TC (una sola vez)
+        # Insertar FACBs del TC (una sola vez, en orden NCB→agency→port_expenses)
         if tc not in tc_inserted:
             for (num, lbl, amt) in tc_groups.get(tc, []):
                 fname = facb_files.get(num)
-                if fname and os.path.exists(fp(fname)):
+                if fname and os.path.exists(fp_fn(fname)):
                     print(f"  [{step}] FACB {num} — {lbl}  (TC {tc:g})")
-                    add_pdf(writer, fp(fname))
+                    add_pdf(writer, fp_fn(fname))
                     step += 1
             tc_inserted.add(tc)
 
@@ -517,9 +473,9 @@ def build_fda(analysis, work_dir, output_path, advance, date):
             writer.add_page(pg)
         step += 1
 
-        # Facturas debajo
+        # Facturas debajo del voucher
         for (fname, pages) in entry.get("invoices", []):
-            full = fp(fname)
+            full = fp_fn(fname)
             if os.path.exists(full):
                 n = add_pdf(writer, full, pages)
                 print(f"       + {fname}  ({n} pgs)")
@@ -542,6 +498,7 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         "vessel":    vessel,
         "client":    client,
     }
+
 
 
 
