@@ -3,6 +3,7 @@ ports.py  —  Configuración multi-puerto para FDA Generator ISA
 Un solo archivo — compatible con Render sin necesidad de carpetas.
 """
 
+import os
 # ══════════════════════════════════════════════════════════════════════════════
 #  BAHIA BLANCA
 # ══════════════════════════════════════════════════════════════════════════════
@@ -257,25 +258,161 @@ class SanLorenzoPort:
         # Normalizar variaciones de spelling en conceptos
         normalized = {}
         for k, v in line_amounts.items():
-            key = k.upper()
-            key = key.replace("PRACTIQUE", "PRATIQUE")  # FACA uses Q spelling
-            key = key.replace("FREE PRATIQUE", "FREE PRATIQUE")
+            key = k.upper().strip()
+            key = key.replace("PRACTIQUE", "PRATIQUE")
+            key = key.replace("CLEARENCE", "CLEARANCE")
+            key = key.replace("ANCHORAGE\n", "ANCHORAGE MANEUVER")
+            # Expansiones de nombres truncados en FACB
+            if key == "RIVER PLATE PILOTAGE ANCHORAGE":
+                key = "RIVER PLATE PILOTAGE ANCHORAGE MANEUVER"
+            if key == "RIVER PARANA PILOTAGE ANCHORAG":
+                key = "RIVER PARANA PILOTAGE ANCHORAGE MANEUVER"
+            if key == "MANDATORY HOLDS INSPECTION AT":
+                key = "MANDATORY HOLDS INSPECTION"
+            if key == "HEADCLERK COMPULSORY":
+                key = "HEADCLERK COMPULSORY SERVICES"
+            if key == "LAUNCH SERVICES FOR CLEARENCE":
+                key = "LAUNCH SERVICES FOR CLEARANCE (AT ROADS)"
+            if key == "LAUNCH SERVICES FOR CLEARANCE":
+                key = "LAUNCH SERVICES FOR CLEARANCE (AT ROADS)"
             normalized[key] = v
         line_amounts = normalized
+
         def amt(k): return line_amounts.get(k.upper(), 0)
+        def fp(f):  return os.path.join(work_dir, f)
+
         tc_agency = self._tc_agency(analysis)
         tc_port   = self._tc_port(analysis)
         mar       = self._mar_inv(analysis)
         entries   = {}
 
-        # Agency Fee
+        # ── 1. Agency Fee (solo voucher, sin factura) ────────────────────────
         entries["AGENCY FEE"] = {
             "concept": "AGENCY FEE",
-            "amount":  next((f.get("total",0) for f in analysis["facbs"] if f.get("type")=="agency"), 0),
+            "amount":  next((f.get("total", 0) for f in analysis["facbs"] if f.get("type") == "agency"), 0),
             "tc": tc_agency, "invoices": [], "solo": True,
         }
 
-        # Maritime vouchers
+        # ── 2. Port Dues — terminal portuario ────────────────────────────────
+        term = [(f, None) for f in analysis.get("terminal_portuario", [])]
+        if term and amt("PORT DUES") > 0:
+            entries["PORT DUES"] = {
+                "concept": "PORT DUES", "amount": amt("PORT DUES"),
+                "tc": tc_port, "invoices": term,
+            }
+
+        # ── 3. Entrance and Light Dues — ENAPRO (pág. interna de Maritime) ──
+        enapro_pages = mar.get("ENTRANCE AND LIGHT DUES", [])
+        if enapro_pages and amt("ENTRANCE AND LIGHT DUES") > 0:
+            entries["ENTRANCE AND LIGHT DUES"] = {
+                "concept": "ENTRANCE AND LIGHT DUES",
+                "amount":  amt("ENTRANCE AND LIGHT DUES"),
+                "tc": tc_port, "invoices": enapro_pages,
+            }
+
+        # ── 4-6. River Plate Pilotage ────────────────────────────────────────
+        rp_all  = analysis.get("practicaje_rp", [])
+        rp_base = [(r["filename"], None) for r in rp_all]
+        rp_delay= [(r["filename"], None) for r in rp_all if r.get("has_demora")]
+        rp_manio= [(r["filename"], None) for r in rp_all if r.get("has_maniobra")]
+        rp_manio_amt = sum(r.get("maniobra_amount", 0) for r in rp_all if r.get("has_maniobra"))
+        # Si el monto de maniobra está en la FACB pero no se detectó en las facturas,
+        # usamos el monto de la FACB y las facturas del Río de la Plata (que contienen la maniobra)
+        facb_rp_manio = amt("RIVER PLATE PILOTAGE ANCHORAGE MANEUVER")
+        if facb_rp_manio > 0 and rp_manio_amt == 0:
+            rp_manio_amt = facb_rp_manio
+            rp_manio = rp_base  # incluir todas las facturas del proveedor
+
+        if rp_base and amt("RIVER PLATE PILOTAGE") > 0:
+            entries["RIVER PLATE PILOTAGE"] = {
+                "concept": "RIVER PLATE PILOTAGE",
+                "amount":  amt("RIVER PLATE PILOTAGE"),
+                "tc": tc_port, "invoices": rp_base,
+            }
+        if rp_delay and amt("RIVER PLATE PILOTAGE (DELAY)") > 0:
+            entries["RIVER PLATE PILOTAGE (DELAY)"] = {
+                "concept": "RIVER PLATE PILOTAGE (DELAY)",
+                "amount":  amt("RIVER PLATE PILOTAGE (DELAY)"),
+                "tc": tc_port, "invoices": rp_delay,
+            }
+        if rp_manio and rp_manio_amt > 0:
+            entries["RIVER PLATE PILOTAGE ANCHORAGE MANEUVER"] = {
+                "concept": "RIVER PLATE PILOTAGE ANCHORAGE MANEUVER",
+                "amount":  rp_manio_amt,
+                "tc": tc_port, "invoices": rp_manio,
+            }
+
+        # ── 7-9. River Parana Pilotage (COPRAC) ──────────────────────────────
+        cp_all  = analysis.get("coprac", [])
+        cp_base = [(r["filename"], None) for r in cp_all]
+        cp_delay= [(r["filename"], None) for r in cp_all if r.get("has_demora")]
+        cp_manio= [(r["filename"], None) for r in cp_all if r.get("has_maniobra")]
+        cp_manio_amt = sum(r.get("maniobra_amount", 0) for r in cp_all if r.get("has_maniobra"))
+        facb_cp_manio = amt("RIVER PARANA PILOTAGE ANCHORAGE MANEUVER")
+        if facb_cp_manio > 0 and cp_manio_amt == 0:
+            cp_manio_amt = facb_cp_manio
+            cp_manio = cp_base  # incluir todas las facturas COPRAC
+
+        if cp_base and amt("RIVER PARANA PILOTAGE") > 0:
+            entries["RIVER PARANA PILOTAGE"] = {
+                "concept": "RIVER PARANA PILOTAGE",
+                "amount":  amt("RIVER PARANA PILOTAGE"),
+                "tc": tc_port, "invoices": cp_base,
+            }
+        if cp_delay and amt("RIVER PARANA PILOTAGE (DELAY)") > 0:
+            entries["RIVER PARANA PILOTAGE (DELAY)"] = {
+                "concept": "RIVER PARANA PILOTAGE (DELAY)",
+                "amount":  amt("RIVER PARANA PILOTAGE (DELAY)"),
+                "tc": tc_port, "invoices": cp_delay,
+            }
+        if cp_manio and cp_manio_amt > 0:
+            entries["RIVER PARANA PILOTAGE ANCHORAGE MANEUVER"] = {
+                "concept": "RIVER PARANA PILOTAGE ANCHORAGE MANEUVER",
+                "amount":  cp_manio_amt,
+                "tc": tc_port, "invoices": cp_manio,
+            }
+
+        # ── 10-11. Port Pilotage (Rosario Pilots) ────────────────────────────
+        rsp_all  = analysis.get("rosario_pilots", [])
+        rsp_base = [(r["filename"], None) for r in rsp_all]
+        rsp_delay= [(r["filename"], None) for r in rsp_all if r.get("has_demora")]
+
+        if rsp_base and amt("PORT PILOTAGE") > 0:
+            entries["PORT PILOTAGE"] = {
+                "concept": "PORT PILOTAGE",
+                "amount":  amt("PORT PILOTAGE"),
+                "tc": tc_port, "invoices": rsp_base,
+            }
+        if rsp_delay and amt("PORT PILOTAGE (DELAY)") > 0:
+            entries["PORT PILOTAGE (DELAY)"] = {
+                "concept": "PORT PILOTAGE (DELAY)",
+                "amount":  amt("PORT PILOTAGE (DELAY)"),
+                "tc": tc_port, "invoices": rsp_delay,
+            }
+
+        # ── 12. Launch Services for Clearance ────────────────────────────────
+        clearance_inv = [(r["filename"], None) for r in analysis.get("amarre_coral", [])
+                         if r.get("is_clearance")]
+        if clearance_inv and amt("LAUNCH SERVICES FOR CLEARANCE (AT ROADS)") > 0:
+            entries["LAUNCH SERVICES FOR CLEARANCE (AT ROADS)"] = {
+                "concept": "LAUNCH SERVICES FOR CLEARANCE (AT ROADS)",
+                "amount":  amt("LAUNCH SERVICES FOR CLEARANCE (AT ROADS)"),
+                "tc": tc_port, "invoices": clearance_inv,
+            }
+
+        # ── 14. Mooring & Unmooring ───────────────────────────────────────────
+        mooring_inv = [(r["filename"], None) for r in analysis.get("amarre_coral", [])
+                       if r.get("is_mooring")]
+        mar_mooring = mar.get("MOORING & UNMOORING SERVICES", [])
+        all_mooring = mooring_inv + mar_mooring
+        if all_mooring and amt("MOORING & UNMOORING SERVICES") > 0:
+            entries["MOORING & UNMOORING SERVICES"] = {
+                "concept": "MOORING & UNMOORING SERVICES",
+                "amount":  amt("MOORING & UNMOORING SERVICES"),
+                "tc": tc_port, "invoices": all_mooring,
+            }
+
+        # ── Maritime vouchers ─────────────────────────────────────────────────
         for voucher in [
             "CUSTOM HOUSE EXPENSES",
             "CUSTOM HOUSE PERMANENCE",
@@ -293,24 +430,80 @@ class SanLorenzoPort:
                 entries[voucher] = {"concept": voucher, "amount": amt(voucher),
                                     "tc": tc_port, "invoices": inv}
 
-        # Navigation Center Contribution — Maritime page or standalone
-        nav = mar.get("NAVIGATION CENTER CONTRIBUTION", [])
+        # Mandatory Holds — páginas internas de Maritime (compulsory_insp)
+        mand_insp   = mar.get("MANDATORY HOLDS INSPECTION", [])
+        mand_reinsp = mar.get("MANDATORY HOLDS RE-INSPECTION", [])
+        if mand_insp and amt("MANDATORY HOLDS INSPECTION") > 0:
+            entries["MANDATORY HOLDS INSPECTION"] = {
+                "concept": "MANDATORY HOLDS INSPECTION",
+                "amount":  amt("MANDATORY HOLDS INSPECTION"),
+                "tc": tc_port, "invoices": mand_insp,
+            }
+        if mand_reinsp and amt("MANDATORY HOLDS RE-INSPECTION") > 0:
+            entries["MANDATORY HOLDS RE-INSPECTION"] = {
+                "concept": "MANDATORY HOLDS RE-INSPECTION",
+                "amount":  amt("MANDATORY HOLDS RE-INSPECTION"),
+                "tc": tc_port, "invoices": mand_reinsp,
+            }
+
+        # Full On Hire / BQS Survey
+        survey_inv = [(f, None) for f in analysis.get("edi_separovic", [])]
+        if survey_inv and amt("FULL ON HIRE / BQS SURVEY") > 0:
+            entries["FULL ON HIRE / BQS SURVEY"] = {
+                "concept": "FULL ON HIRE / BQS SURVEY",
+                "amount":  amt("FULL ON HIRE / BQS SURVEY"),
+                "tc": tc_port, "invoices": survey_inv,
+            }
+
+        # Navigation Center — standalone o página de Maritime
+        nav_mar   = mar.get("NAVIGATION CENTER CONTRIBUTION", [])
         nav_files = [(f, None) for f in analysis.get("centro_nav", [])]
-        if nav or nav_files:
+        all_nav   = nav_files + nav_mar
+        if all_nav and amt("NAVIGATION CENTER CONTRIBUTION") > 0:
             entries["NAVIGATION CENTER CONTRIBUTION"] = {
                 "concept": "NAVIGATION CENTER CONTRIBUTION",
                 "amount":  amt("NAVIGATION CENTER CONTRIBUTION"),
-                "tc": tc_port, "invoices": nav + nav_files,
+                "tc": tc_port, "invoices": all_nav,
             }
 
-        # Tax — siempre último
-        entries["TAX ON CREDIT/DEBIT LAW 25.413"] = {
-            "concept": "TAX ON CREDIT/DEBIT LAW 25.413",
-            "amount":  amt("TAX ON CREDIT/DEBIT LAW 25.413"),
-            "tc": tc_port, "invoices": [], "solo": True,
-        }
+        # ── Tax — cada TC tiene su instancia ─────────────────────────────────
+        # Se inserta automáticamente como fallback si aparece en la FACB
+        tax_amt = amt("TAX ON CREDIT/DEBIT LAW 25.413")
+        if tax_amt > 0:
+            entries["TAX ON CREDIT/DEBIT LAW 25.413"] = {
+                "concept": "TAX ON CREDIT/DEBIT LAW 25.413",
+                "amount":  tax_amt,
+                "tc": tc_port, "invoices": [], "solo": True,
+            }
 
-        # Fallback: cualquier línea de la FACB sin voucher → crear voucher
+        # ── Toll Dues CARP ───────────────────────────────────────────────────
+        carp_inv = [(f, None) for f in analysis.get("carp", [])]
+        if carp_inv and amt("TOLL DUES (CARP)") > 0:
+            entries["TOLL DUES (CARP)"] = {
+                "concept": "TOLL DUES (CARP)",
+                "amount":  amt("TOLL DUES (CARP)"),
+                "tc": tc_port, "invoices": carp_inv,
+            }
+
+        # ── Pilot Launch Transportation River Plate (Glatil USD 4,440) ───────
+        glatil_inv = [(f, None) for f in analysis.get("glatil", [])]
+        if glatil_inv and amt("PILOT LAUNCH TRANSPORTATION RIVER PLATE") > 0:
+            entries["PILOT LAUNCH TRANSPORTATION RIVER PLATE"] = {
+                "concept": "PILOT LAUNCH TRANSPORTATION RIVER PLATE",
+                "amount":  amt("PILOT LAUNCH TRANSPORTATION RIVER PLATE"),
+                "tc": tc_port, "invoices": glatil_inv,
+            }
+
+        # ── Toll Dues AGP ────────────────────────────────────────────────────
+        agp_inv = [(f, None) for f in analysis.get("agp", [])]
+        if agp_inv and amt("TOLL DUES (AGP)") > 0:
+            entries["TOLL DUES (AGP)"] = {
+                "concept": "TOLL DUES (AGP)",
+                "amount":  amt("TOLL DUES (AGP)"),
+                "tc": tc_port, "invoices": agp_inv,
+            }
+
+        # ── Fallback: líneas de FACB sin voucher asignado ────────────────────
         for concept, amount in line_amounts.items():
             if concept not in entries and amount > 0 and concept in self.VOUCHER_ORDER:
                 entries[concept] = {"concept": concept, "amount": amount,
@@ -363,6 +556,7 @@ def detect_port(analysis):
         return NecocheaPort()
 
     return BahiaBlancaPort()
+
 
 
 
