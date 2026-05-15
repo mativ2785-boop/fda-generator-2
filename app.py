@@ -134,7 +134,7 @@ input:focus{border-color:#3B5490}
 <body>
 <header>
   <div><h1>ISA · FDA Generator</h1>
-  <small>Bahia Blanca · detección automática por contenido</small></div>
+  </div>
 </header>
 <main>
 
@@ -531,6 +531,8 @@ def generate():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
+
 
 
 
