@@ -461,8 +461,12 @@ def build_fda(analysis, work_dir, output_path, advance, date):
     # Extraer montos por línea de la FACB de port expenses
     port_facb = next((f for f in analysis["facbs"] if f.get("type")=="port_expenses"), None)
     line_amounts = {}
-    if port_facb and port_facb.get("filename"):
-        line_amounts = extract_facb_line_amounts(fp(port_facb["filename"]))
+    # Combinar line_amounts de TODAS las FACBs de port_expenses (pueden ser de distintos TC)
+    for facb in analysis["facbs"]:
+        if facb.get("type") == "port_expenses" and facb.get("filename"):
+            la = extract_facb_line_amounts(fp(facb["filename"]))
+            for k, v in la.items():
+                line_amounts[k] = line_amounts.get(k, 0) + v
 
     # 1. Sumario
     print("  [1] Sumario...")
@@ -538,6 +542,10 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         "vessel":    vessel,
         "client":    client,
     }
+
+
+
+
 
 
 
