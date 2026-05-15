@@ -83,6 +83,8 @@ DOC_TYPES_CONTENT = [
     ("facb_isa",      ["B00003", "INDEPENDENT SHIP AGENTS"]),
 
     ("facb_isa",      ["B00003", "AGENCY FEE"]),
+    ("facb_isa",      ["B00003", "NOTA DE CREDITO"]),
+    ("facb_isa",      ["B00003", "CREDIT NOTE"]),
     ("facb_isa",      ["B00003", "PORT DUES"]),
     # FACA — charterers agents (A00003)
     ("facb_isa",      ["A00003", "Cod.001"]),
@@ -119,6 +121,32 @@ DOC_TYPES_CONTENT = [
     ("melluso",       ["SERVICIO DE LANCHAS Y AMARRADORES PUERTO QUEQUEN"]),
     ("shore_gangway", ["SHORE GANGWAY", "30716643685"]),
     ("shore_gangway", ["SHORE GANGWAY", "CRANE SERVICE"]),
+    # San Lorenzo providers
+    ("terminal_portuario", ["TERMINAL 6 S.A."]),
+    ("terminal_portuario", ["COFCO ARGENTINA"]),
+    ("terminal_portuario", ["MOLINOS AGRO"]),
+    ("terminal_portuario", ["CARGILL S.A.C.I."]),
+    ("practicaje_rp",      ["Practicaje", "Río de la Plata", "ripla.com.ar"]),
+    ("practicaje_rp",      ["PRACTICAJE RIO DE LA PLATA"]),
+    ("practicaje_rp",      ["33-70776769-9"]),   # CUIT Practicaje RP
+    ("coprac",             ["C.O.P.R.A.C."]),
+    ("coprac",             ["COPRAC"]),
+    ("coprac",             ["30-64926021-0"]),    # CUIT COPRAC
+    ("rosario_pilots",     ["ROSARIO PILOTS"]),
+    ("rosario_pilots",     ["rosariopilots.com"]),
+    ("rosario_pilots",     ["30-64794073-7"]),    # CUIT Rosario Pilots
+    ("amarre_coral",       ["AMARRE CORAL"]),
+    ("amarre_coral",       ["30711479879"]),      # CUIT Amarre Coral
+    ("glatil",             ["GLATIL"]),
+    ("glatil",             ["213452850015"]),     # RUC Glatil (Uruguay)
+    ("carp",               ["Comisión Administradora del Río de la Plata"]),
+    ("carp",               ["COMISION ADM DEL RIO DE LP"]),
+    ("carp",               ["peaje@comisionriodelaplata.org"]),
+    ("agp",                ["ADMINISTRACION GENERAL DE PUERTOS"]),
+    ("agp",                ["30-54670628-8"]),    # CUIT AGP
+    ("edi_separovic",      ["SEPAROVIC EDI"]),
+    ("edi_separovic",      ["SEPAROVIC"]),
+    ("edi_separovic",      ["20937939907"]),      # CUIT EDI Separovic
 ]
 
 # Detección por nombre de archivo (fallback cuando el PDF es imagen/escaneado)
@@ -127,6 +155,8 @@ DOC_TYPES_NAME = [
     ("bna",           ["Banco", "BNA", "Naci"]),
     ("facb_isa",      ["FACB"]),
     ("facb_isa",      ["FACA"]),
+    ("facb_isa",      ["N_CB"]),
+    ("facb_isa",      ["NCB"]),
     ("consorcio",     ["CONSORCIO", "PUERTO DE BAHIA"]),
     ("donmar",        ["DONMAR"]),
     ("puerto_mariel", ["MARIEL", "TOWAGE"]),
@@ -138,8 +168,81 @@ DOC_TYPES_NAME = [
     ("consorcio_quequen", ["QUEQUEN", "QUEQU"]),
     ("pilotaje",      ["MEYER", "ARANA"]),
     ("melluso",       ["MELLUSO"]),
-    ("shore_gangway", ["GANGWAY", "PASARELA"]),
+    ("shore_gangway",       ["GANGWAY", "PASARELA"]),
+    # San Lorenzo fallback por nombre
+    ("terminal_portuario",  ["TERMINAL 6", "COFCO", "MOLINOS", "CARGILL"]),
+    ("practicaje_rp",       ["PRACTICAJE RIO", "RIPLA", "120002"]),
+    ("coprac",              ["COPRAC", "120083"]),
+    ("rosario_pilots",      ["ROSARIO PILOTS", "120033"]),
+    ("amarre_coral",        ["AMARRE CORAL", "401604"]),
+    ("glatil",              ["GLATIL", "300361"]),
+    ("carp",                ["CARP", "400477"]),
+    ("agp",                 ["ADMINISTRACION GENERAL DE PUERTOS", "401262"]),
+    ("edi_separovic",       ["SEPAROVIC", "EDI", "300391"]),
 ]
+
+
+def detect_pilotaje_flags(pdf_path):
+    """
+    Detecta si una factura de pilotaje tiene DEMORA y/o línea MANIOBRA con monto.
+    Retorna (has_demora, has_maniobra, maniobra_amount)
+    """
+    import fitz
+    try:
+        doc = fitz.open(pdf_path)
+        text = ""
+        for pg in doc:
+            text += pg.get_text()
+    except Exception:
+        return False, False, 0.0
+
+    text_up = text.upper()
+    has_demora = "DEMORA" in text_up or "DELAY" in text_up
+
+    # Buscar línea MANIOBRAS con monto
+    has_maniobra = False
+    maniobra_amount = 0.0
+    import re
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        lu = line.upper()
+        if "MANIOBRA" in lu:
+            # Formato 1: "1 MANIOBRAS EN ZC USD 2,520.00"
+            m = re.search(r"USD\s*([\d,\.]+)", line)
+            if m:
+                has_maniobra = True
+                maniobra_amount += float(m.group(1).replace(",", ""))
+                continue
+            # Formato 2 COPRAC: "||1 MANIOBRAS DE FONDEO" seguido de monto en columna
+            # El total está al final de la línea como número
+            m2 = re.search(r"([\d]+[.,][\d]+)\s*$", line)
+            if m2:
+                try:
+                    val = float(m2.group(1).replace(",", "."))
+                    if val > 0:
+                        has_maniobra = True
+                        maniobra_amount += val
+                        continue
+                except ValueError:
+                    pass
+            # Formato 3 COPRAC: "||1 MANIOBRAS DE FONDEO\n2.520,00||"
+            # monto en la siguiente línea, formato "2.520,00||"
+            for j in range(i+1, min(i+4, len(lines))):
+                # limpiar pipes y espacios
+                clean = lines[j].replace("|", "").strip()
+                m3 = re.match(r"^([\d]+[.,][\d]+)$", clean)
+                if m3:
+                    try:
+                        # COPRAC usa coma como separador de miles: "2.520,00" → 2520.00
+                        raw = m3.group(1).replace(".", "").replace(",", ".")
+                        val = float(raw)
+                        if val > 100:
+                            has_maniobra = True
+                            maniobra_amount += val
+                    except ValueError:
+                        pass
+                    break
+    return has_demora, has_maniobra, maniobra_amount
 
 
 def classify_doc(pdf_path):
@@ -224,6 +327,12 @@ MARITIME_PAGE_RULES = [
     ("osro",              ["OSRO", "BARRERAS FLOTANTES"]),
     ("osro",              ["COMPULSORY BARRIER"]),
     ("pest_pag",          ["AMMOCA"]),
+    ("enapro",            ["Ente Administrador Puerto Rosario"]),
+    ("enapro",            ["enapro.com.ar"]),
+    ("enapro",            ["ENAPRO"]),
+    ("compulsory_insp",   ["COMPULSORY INSPECTION BY PRIVATE SURVEYORS"]),
+    ("compulsory_reinsp", ["RE-INSPECTION", "PRIVATE SURVEYORS"]),
+    ("compulsory_reinsp", ["REINSPECTION", "PRIVATE SURVEYORS"]),
 ]
 
 PAGE_TO_VOUCHER = {
@@ -252,6 +361,9 @@ PAGE_TO_VOUCHER = {
     "shore_gangway_pag": "SHORE GANGWAY",
     "osro":              "OSRO ANNEX 18",
     "pest_pag":          "PEST CONTROL",
+    "enapro":            "ENTRANCE AND LIGHT DUES",
+    "compulsory_insp":   "MANDATORY HOLDS INSPECTION",
+    "compulsory_reinsp": "MANDATORY HOLDS RE-INSPECTION",
     "skip":              None,
     "skip_dup":          None,
     "disbursement":      None,
@@ -422,7 +534,10 @@ def analyze(work_dir):
         "amarradores": [], "ammoca": [], "centro_nav": [],
         # Necochea-specific
         "consorcio_quequen": [], "pilotaje": [], "melluso": [], "shore_gangway": [],
-        "san_lorenzo": [],   # placeholder para proveedores SL a futuro
+        # San Lorenzo providers
+        "terminal_portuario": [], "practicaje_rp": [], "coprac": [],
+        "rosario_pilots": [], "amarre_coral": [], "glatil": [],
+        "carp": [], "agp": [], "edi_separovic": [],
         "unknown": [],
         "vessel": None, "client": None, "sailed": None, "port": None,
         "tc_groups": {},
@@ -482,6 +597,40 @@ def analyze(work_dir):
             result["melluso"].append(fname)
         elif dtype == "shore_gangway":
             result["shore_gangway"].append(fname)
+        elif dtype == "terminal_portuario":
+            result["terminal_portuario"].append(fname)
+        elif dtype == "practicaje_rp":
+            flags = detect_pilotaje_flags(fpath)
+            result["practicaje_rp"].append({"filename": fname,
+                "has_demora": flags[0], "has_maniobra": flags[1], "maniobra_amount": flags[2]})
+        elif dtype == "coprac":
+            flags = detect_pilotaje_flags(fpath)
+            result["coprac"].append({"filename": fname,
+                "has_demora": flags[0], "has_maniobra": flags[1], "maniobra_amount": flags[2]})
+        elif dtype == "rosario_pilots":
+            flags = detect_pilotaje_flags(fpath)
+            result["rosario_pilots"].append({"filename": fname,
+                "has_demora": flags[0], "has_maniobra": flags[1], "maniobra_amount": flags[2]})
+        elif dtype == "amarre_coral":
+            # Detectar si es clearance (embark/disembark inspectors) o mooring
+            import fitz as _fitz
+            try:
+                _text = ""
+                for _pg in _fitz.open(fpath): _text += _pg.get_text()
+            except: _text = ""
+            _tu = _text.upper()
+            is_clearance = ("DISEMBARK" in _tu and "INSPECTOR" in _tu) or ("EMBARK" in _tu and "INSPECTOR" in _tu)
+            is_mooring   = "MOORING" in _tu and ("UNMOORING" in _tu or "UNMOORING" in _tu)
+            result["amarre_coral"].append({"filename": fname,
+                "is_clearance": is_clearance, "is_mooring": is_mooring})
+        elif dtype == "glatil":
+            result["glatil"].append(fname)
+        elif dtype == "carp":
+            result["carp"].append(fname)
+        elif dtype == "agp":
+            result["agp"].append(fname)
+        elif dtype == "edi_separovic":
+            result["edi_separovic"].append(fname)
         else:
             result["unknown"].append(fname)
 
