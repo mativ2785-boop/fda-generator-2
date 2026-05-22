@@ -399,11 +399,13 @@ class SanLorenzoPort:
         rp_delay = [(r["filename"], None) for r in rp_all if r.get("has_demora")]
         # SOLO las facturas que tienen línea de maniobra con monto
         rp_manio     = [(r["filename"], None) for r in rp_all if r.get("has_maniobra")]
-        rp_manio_amt = sum(r.get("maniobra_amount", 0) for r in rp_all if r.get("has_maniobra"))
-        # Si la FACB tiene el monto pero ninguna factura detectó maniobra, usar todas como fallback
+        # El monto del voucher SIEMPRE es el de la FACB (línea de la factura ISA)
         facb_rp_manio = amt("RIVER PLATE PILOTAGE ANCHORAGE MANEUVER")
-        if facb_rp_manio > 0 and rp_manio_amt == 0:
-            rp_manio_amt = facb_rp_manio
+        rp_manio_amt = facb_rp_manio
+        if rp_manio_amt == 0:
+            # Fallback: sumar facturas de proveedor si no hay FACB
+            rp_manio_amt = sum(r.get("maniobra_amount", 0) for r in rp_all if r.get("has_maniobra"))
+        if rp_manio_amt == 0:
             rp_manio = rp_base
 
         if rp_base and amt("RIVER PLATE PILOTAGE") > 0:
@@ -432,10 +434,13 @@ class SanLorenzoPort:
         cp_delay = [(r["filename"], [0]) for r in cp_all if r.get("has_demora")]
         # Anchorage: solo las que tienen maniobra
         cp_manio     = [(r["filename"], [0]) for r in cp_all if r.get("has_maniobra")]
-        cp_manio_amt = sum(r.get("maniobra_amount", 0) for r in cp_all if r.get("has_maniobra"))
+        # El monto del voucher SIEMPRE es el de la FACB (línea de la factura ISA)
         facb_cp_manio = amt("RIVER PARANA PILOTAGE ANCHORAGE MANEUVER")
-        if facb_cp_manio > 0 and cp_manio_amt == 0:
-            cp_manio_amt = facb_cp_manio
+        cp_manio_amt = facb_cp_manio
+        if cp_manio_amt == 0:
+            # Fallback: sumar facturas de proveedor si no hay FACB
+            cp_manio_amt = sum(r.get("maniobra_amount", 0) for r in cp_all if r.get("has_maniobra"))
+        if cp_manio_amt == 0:
             cp_manio = cp_base
 
         if cp_base and amt("RIVER PARANA PILOTAGE") > 0:
@@ -784,6 +789,7 @@ def detect_port(analysis):
             analysis.get("rosario_pilots") or analysis.get("terminal_portuario")):
         return SanLorenzoPort()
     return BahiaBlancaPort()
+
 
 
 
