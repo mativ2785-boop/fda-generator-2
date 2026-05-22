@@ -2,6 +2,13 @@
 assembler.py  —  ISA FDA Generator
 Construye el invoice_map y ensambla el PDF final.
 Soporta: Bahia Blanca, Necochea, San Lorenzo / Arroyo Seco / Gral. Lagos
+
+FIX #1: Las FACBs de cada TC se insertan ANTES del PRIMER voucher de ese TC.
+  - El TC de Agency Fee determina cuándo insertar NCB + FACB Agency + FACBs del mismo TC.
+  - Los TCs siguientes (ej. 1385, 1457) insertan su bloque de FACBs justo antes
+    del primer voucher de ese TC (Toll Dues AGP, Toll Dues CARP, River Plate TC1457, etc.).
+  - Esto garantiza el orden correcto: Agency Fee va primero como voucher, y las
+    FACBs se insertan en el orden correcto respecto a sus vouchers.
 """
 
 import os, io, re, sys
@@ -27,13 +34,36 @@ ISA_BLUE = colors.HexColor("#3B5490")
 LOGO     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo_isa.png")
 
 MONTHS_ABBR = {
-    "January":"Jan","February":"Feb","March":"Mar","April":"Apr",
-    "May":"May","June":"Jun","July":"Jul","August":"Aug",
-    "September":"Sep","October":"Oct","November":"Nov","December":"Dec",
+    "January": "Jan", "February": "Feb", "March": "Mar",   "April": "Apr",
+    "May": "May",     "June": "Jun",     "July": "Jul",     "August": "Aug",
+    "September": "Sep","October": "Oct", "November": "Nov", "December": "Dec",
 }
 
 
 # ── PDF helpers ───────────────────────────────────────────────────────────────
+
+def _get_bna_tc(bna_path):
+    """Lee el TC de un archivo BNA del Banco Nación."""
+    try:
+        import fitz as _fitz
+        doc = _fitz.open(bna_path)
+        text = doc[0].get_text()
+        import re as _re
+        # Buscar el valor de venta (el TC fiscal)
+        matches = _re.findall(r"[\d]+[,\.][\d]{4}", text)
+        vals = []
+        for m in matches:
+            try:
+                vals.append(float(m.replace(",", ".")))
+            except Exception:
+                pass
+        # El TC es el valor más alto (venta)
+        if vals:
+            return max(vals)
+    except Exception:
+        pass
+    return None
+
 
 def fmt_amt(v):
     return f"{int(v):,}" if v == int(v) else f"{v:,.2f}"
@@ -57,10 +87,6 @@ def add_pdf(writer, path, pages=None):
 # ── Logo extractor ────────────────────────────────────────────────────────────
 
 def extract_logo_from_facb(facb_path, dest_path):
-    """
-    Extrae el logo ISA desde una FACB como crop de la página.
-    El logo aparece en la parte superior-izquierda de la FACB.
-    """
     try:
         doc  = fitz.open(facb_path)
         pg   = doc[0]
@@ -79,7 +105,6 @@ def make_voucher(concept, amount, tc, vessel, sailed, port="BAHIA BLANCA"):
     buf = io.BytesIO()
     c   = canvas.Canvas(buf, pagesize=A4)
 
-    # Logo centrado arriba
     lw = lh = 100
     if os.path.exists(LOGO):
         c.drawImage(LOGO, (PW - lw) / 2, PH - 20 - lh, width=lw, height=lh,
@@ -134,7 +159,6 @@ def make_summary(vessel, port, sailed, date, client, advance, tc_groups, bank_in
     buf = io.BytesIO()
     c   = canvas.Canvas(buf, pagesize=A4)
 
-    # Logo arriba a la derecha
     lw = lh = 100
     if os.path.exists(LOGO):
         c.drawImage(LOGO, PW - 40 - lw, PH - 20 - lh, width=lw, height=lh,
@@ -196,7 +220,6 @@ def make_summary(vessel, port, sailed, date, client, advance, tc_groups, bank_in
 
     port_short = port.replace(" Port", "").replace(" port", "")
 
-    # Orden: NCBs primero (de todos los TC), luego agency, luego port_expenses
     all_ncbs     = []
     all_agency   = []
     all_port_exp = []
@@ -229,7 +252,6 @@ def make_summary(vessel, port, sailed, date, client, advance, tc_groups, bank_in
         total += amt
         ry -= ROW_H
 
-    # Total Expenses
     c.setFillColor(colors.white)
     c.rect(40, ry - ROW_H, 515, ROW_H, fill=1, stroke=0)
     c.setFillColor(colors.black)
@@ -324,10 +346,6 @@ def make_summary(vessel, port, sailed, date, client, advance, tc_groups, bank_in
 # ── Extract line amounts from FACB ────────────────────────────────────────────
 
 def extract_facb_line_amounts(pdf_path):
-    """
-    Extrae montos por concepto de una FACB de port expenses.
-    Formato: N° / CONCEPTO / 1.00 / MONTO
-    """
     amounts = {}
     try:
         doc   = fitz.open(pdf_path)
@@ -354,10 +372,6 @@ def extract_facb_line_amounts(pdf_path):
 # ── Normalize line_amounts keys ───────────────────────────────────────────────
 
 def normalize_line_amounts(line_amounts):
-    """
-    Normaliza las claves de line_amounts para que coincidan con los nombres
-    canónicos de los vouchers (truncados en FACBs, variaciones de spelling, etc.)
-    """
     normalized = {}
     for k, v in line_amounts.items():
         key = k.upper().strip()
@@ -381,11 +395,81 @@ def normalize_line_amounts(line_amounts):
     return normalized
 
 
+# ── Normalize line_amounts with TC awareness ─────────────────────────────────
+
+def normalize_line_amounts_with_tc(analysis, work_dir):
+    """
+    Extrae line_amounts por FACB con manejo inteligente de TC múltiples.
+    
+    Reglas especiales:
+    - TOLL DUES → TOLL DUES (AGP) o TOLL DUES (CARP) según TC y proveedores
+    - RIVER PLATE PILOTAGE en TC alto (con Glatil) → PILOT LAUNCH TRANSPORTATION RIVER PLATE
+    - TAX ON CREDIT/DEBIT LAW 25.413 en TCs distintos al base → clave con sufijo _TC{n}
+    """
+    line_amounts = {}
+    has_agp  = bool(analysis.get("agp"))
+    has_carp = bool(analysis.get("carp"))
+    
+    facb_port = [(f["tc"], f["filename"]) for f in analysis.get("facbs", [])
+                 if f.get("type") == "port_expenses" and f.get("filename") and f.get("tc")]
+    facb_port.sort(key=lambda x: x[0])
+    tcs_sorted = [tc for tc, _ in facb_port]
+    tc_base = tcs_sorted[0] if tcs_sorted else 0
+    
+    for tc, fname in facb_port:
+        fpath = os.path.join(work_dir, fname)
+        if not os.path.exists(fpath):
+            continue
+        la = extract_facb_line_amounts(fpath)
+        
+        for k, v in la.items():
+            key = k.upper().strip()
+            key = key.replace("PRACTIQUE", "PRATIQUE").replace("CLEARENCE", "CLEARANCE")
+            if key == "RIVER PLATE PILOTAGE ANCHORAGE": key = "RIVER PLATE PILOTAGE ANCHORAGE MANEUVER"
+            if key == "RIVER PARANA PILOTAGE ANCHORAG": key = "RIVER PARANA PILOTAGE ANCHORAGE MANEUVER"
+            if key == "MANDATORY HOLDS INSPECTION AT":  key = "MANDATORY HOLDS INSPECTION"
+            if key == "HEADCLERK COMPULSORY":           key = "HEADCLERK COMPULSORY SERVICES"
+            if key in ("LAUNCH SERVICES FOR CLEARENCE","LAUNCH SERVICES FOR CLEARANCE"):
+                key = "LAUNCH SERVICES FOR CLEARANCE (AT ROADS)"
+            if key == "FULL ON HIRE DELIVERY BUNKER A": key = "FULL ON HIRE / BQS SURVEY"
+            
+            # TOLL DUES → AGP o CARP según TC
+            if key == "TOLL DUES":
+                if has_agp and has_carp:
+                    toll_tcs = sorted(set(
+                        t for t, fn in facb_port
+                        if "TOLL DUES" in [kk.upper() for kk in extract_facb_line_amounts(os.path.join(work_dir, fn)).keys()]
+                    ))
+                    key = "TOLL DUES (AGP)" if toll_tcs and tc == min(toll_tcs) else "TOLL DUES (CARP)"
+                elif has_agp:
+                    key = "TOLL DUES (AGP)"
+                elif has_carp:
+                    key = "TOLL DUES (CARP)"
+            
+            # RIVER PLATE PILOTAGE en TC alto → PILOT LAUNCH (Glatil)
+            if key == "RIVER PLATE PILOTAGE" and tc > tc_base and analysis.get("glatil"):
+                key = "PILOT LAUNCH TRANSPORTATION RIVER PLATE"
+            
+            # TAX en TCs distintos al base → clave separada por TC
+            if key == "TAX ON CREDIT/DEBIT LAW 25.413" and tc > tc_base:
+                key = f"TAX ON CREDIT/DEBIT LAW 25.413 _TC{tc:g}"
+            
+            line_amounts[key] = line_amounts.get(key, 0) + v
+    
+    return line_amounts
+
+
 # ── Build FDA ─────────────────────────────────────────────────────────────────
 
 def build_fda(analysis, work_dir, output_path, advance, date):
     """
     Ensambla el FDA completo. Retorna dict con estadísticas.
+
+    FIX #1 — Orden de inserción de FACBs:
+    Las FACBs de cada TC se insertan ANTES del primer voucher de ese TC.
+    Orden dentro del grupo TC: NCB(s) → Agency Fee → Port Expenses.
+    Esto garantiza que FACB 30317 (TC 1345) quede DESPUÉS del voucher Agency Fee,
+    y que los grupos TC 1385 y TC 1457 aparezcan antes de sus vouchers respectivos.
     """
     writer = PdfWriter()
 
@@ -399,7 +483,7 @@ def build_fda(analysis, work_dir, output_path, advance, date):
     facb_files = {f["number"]: f["filename"]
                   for f in analysis["facbs"] if f.get("number")}
 
-    # Extraer logo desde la primera FACB disponible si no existe
+    # Extraer logo si no existe
     if not os.path.exists(LOGO):
         for facb in analysis.get("facbs", []):
             fname = facb.get("filename")
@@ -407,16 +491,10 @@ def build_fda(analysis, work_dir, output_path, advance, date):
                 extract_logo_from_facb(fp_fn(fname), LOGO)
                 break
 
-    # Combinar line_amounts de TODAS las FACBs de port_expenses
-    line_amounts = {}
-    for facb in analysis["facbs"]:
-        if facb.get("type") == "port_expenses" and facb.get("filename"):
-            la = extract_facb_line_amounts(fp_fn(facb["filename"]))
-            for k, v in la.items():
-                line_amounts[k] = line_amounts.get(k, 0) + v
-    line_amounts = normalize_line_amounts(line_amounts)
+    # Combinar line_amounts — usar versión con TC-awareness para mapear TOLL DUES correctamente
+    line_amounts = normalize_line_amounts_with_tc(analysis, work_dir)
 
-    # Ordenar tc_groups: dentro de cada TC, NCBs primero, luego agency, luego port_expenses
+    # Ordenar tc_groups: dentro de cada TC → NCBs, agency, port_expenses
     for tc in tc_groups:
         rows = tc_groups[tc]
         ncbs     = [(n, l, a) for (n, l, a) in rows if "crédito" in l.lower() or "ncb" in l.lower()]
@@ -425,7 +503,7 @@ def build_fda(analysis, work_dir, output_path, advance, date):
                     if "crédito" not in l.lower() and "ncb" not in l.lower() and "agency" not in l.lower()]
         tc_groups[tc] = ncbs + agency + port_exp
 
-    # 1. Sumario
+    # ── 1. Sumario ────────────────────────────────────────────────────────────
     print("  [1] Sumario...")
     bank_info = None
     for facb in analysis.get("facbs", []):
@@ -435,27 +513,76 @@ def build_fda(analysis, work_dir, output_path, advance, date):
     for pg in make_summary(vessel, port, sailed, date, client, advance, tc_groups, bank_info).pages:
         writer.add_page(pg)
 
-    # 2. SOF
+    # ── 2. SOF ────────────────────────────────────────────────────────────────
     if analysis["sof"]:
         print("  [2] SOF...")
         add_pdf(writer, fp_fn(analysis["sof"]))
 
-    # 3. BNA — si existe
+    # ── 3. BNA (solo si existe — Bahia Blanca lo incluye, San Lorenzo no) ─────
     if analysis["bna"]:
         print("  [3] BNA...")
         add_pdf(writer, fp_fn(analysis["bna"]))
 
-    # 4+. FACBs y vouchers
+    # ── 4+. FACBs y vouchers ──────────────────────────────────────────────────
     port_config = _detect_port(analysis)
     invoice_map = port_config.build_invoice_map(analysis, work_dir, line_amounts)
+
+    # FIX #1: Determinar el TC de cada entry para saber cuándo insertar FACBs.
+    # Las FACBs del TC del Agency Fee se insertan inmediatamente DESPUÉS del SOF/BNA
+    # y ANTES del primer voucher (Agency Fee). Los TCs siguientes se insertan
+    # antes del primer voucher que use ese TC.
     tc_inserted = set()
     step = 4
 
+    # Determinar el TC del Agency Fee (primer TC en orden)
+    tc_agency = min(tc_groups.keys()) if tc_groups else None
+
+    # FIX #1 (revisado): 
+    # Antes del voucher Agency Fee: solo NCBs + FACB Agency del TC base.
+    # La FACB de port_expenses del TC base se inserta antes del voucher PORT DUES
+    # (es decir, después del voucher Agency Fee).
+    # Los TCs siguientes (1385, 1457) se insertan antes de sus vouchers.
+    if tc_agency and tc_agency not in tc_inserted:
+        # Solo NCBs y agency del TC base antes del Agency Fee
+        for (num, lbl, amt) in tc_groups.get(tc_agency, []):
+            if "port" in lbl.lower() and "agency" not in lbl.lower() and "crédito" not in lbl.lower():
+                continue  # Las port_expenses del TC base van después del Agency Fee
+            fname = facb_files.get(num)
+            if fname and os.path.exists(fp_fn(fname)):
+                print(f"  [{step}] FACB {num} — {lbl}  (TC {tc_agency:g})")
+                add_pdf(writer, fp_fn(fname))
+                step += 1
+        tc_inserted.add(tc_agency)
+    # Marcar TC base como "parcialmente insertado" — las port_expenses se insertan luego
+    tc_port_expenses_inserted = set()
+
     for entry in invoice_map:
         tc = entry["tc"]
+        concept = entry["concept"]
 
-        # Insertar FACBs del TC (una sola vez, en orden NCB→agency→port_expenses)
+        # Para el TC base: insertar las FACB de port_expenses antes del voucher Port Dues
+        if tc == tc_agency and tc not in tc_port_expenses_inserted and concept != "AGENCY FEE":
+            for (num, lbl, amt) in tc_groups.get(tc_agency, []):
+                if "port" in lbl.lower() and "agency" not in lbl.lower() and "crédito" not in lbl.lower():
+                    fname = facb_files.get(num)
+                    if fname and os.path.exists(fp_fn(fname)):
+                        print(f"  [{step}] FACB {num} — {lbl}  (TC {tc_agency:g})")
+                        add_pdf(writer, fp_fn(fname))
+                        step += 1
+            tc_port_expenses_inserted.add(tc)
+
+        # Para TCs distintos al del Agency Fee: insertar BNA extra + FACBs antes del primer voucher
         if tc not in tc_inserted:
+            # Insertar BNA extra si corresponde a este TC
+            bna_extra_list = analysis.get("bna_extra", [])
+            for bna_extra in bna_extra_list:
+                # Verificar si el BNA corresponde a este TC (por cotización)
+                bna_tc = _get_bna_tc(fp_fn(bna_extra))
+                if bna_tc and abs(bna_tc - tc) < 1:
+                    print(f"  [{step}] BNA extra TC {tc:g}")
+                    add_pdf(writer, fp_fn(bna_extra))
+                    step += 1
+
             for (num, lbl, amt) in tc_groups.get(tc, []):
                 fname = facb_files.get(num)
                 if fname and os.path.exists(fp_fn(fname)):
@@ -464,12 +591,17 @@ def build_fda(analysis, work_dir, output_path, advance, date):
                     step += 1
             tc_inserted.add(tc)
 
-        # Voucher
-        concept = entry["concept"]
+        # Voucher — mapear nombres de display
         amount  = entry["amount"]
         port_v  = port.replace(" Port", "").replace(" port", "")
-        print(f"  [{step}] Voucher: {concept}")
-        for pg in make_voucher(concept, amount, tc, vessel, sailed, port_v).pages:
+        # Los vouchers de Toll Dues se imprimen como "TOLL DUES" independientemente del proveedor
+        display_concept = concept
+        if concept in ("TOLL DUES (AGP)", "TOLL DUES (CARP)"):
+            display_concept = "TOLL DUES"
+        elif concept == "PILOT LAUNCH TRANSPORTATION RIVER PLATE":
+            display_concept = "RIVER PLATE PILOTAGE"
+        print(f"  [{step}] Voucher: {display_concept}")
+        for pg in make_voucher(display_concept, amount, tc, vessel, sailed, port_v).pages:
             writer.add_page(pg)
         step += 1
 
@@ -498,6 +630,7 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         "vessel":    vessel,
         "client":    client,
     }
+
 
 
 
