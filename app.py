@@ -347,12 +347,18 @@ function render(a) {
       ["TOWAGE SERVICES","Towage Services"],
       ["CUSTOM HOUSE EXPENSES","Custom House Expenses"],
       ["CUSTOM HOUSE PERMANENCE","Custom House Permanence"],
+      ["CUSTOM HOUSE EXPENSE (CARGO)","Custom House (Cargo)"],
       ["CUSTOM HOUSE (BUNKERING)","Custom House (Bunkering)"],
       ["MIGRATION EXPENSES","Migration Expenses"],
       ["SANITARY DUES AND FREE PRATIQUE","Sanitary Dues"],
       ["GARBAGE COMPULSORY INSPECTION","Garbage Inspection"],
+      ["MANDATORY HOLDS INSPECTION","Mandatory Holds Inspection"],
+      ["MANDATORY HOLDS RE-INSPECTION","Mandatory Holds Re-Inspection"],
       ["WATCHMEN COMPULSORY SERVICES","Watchmen Services"],
       ["HEADCLERK COMPULSORY SERVICES","Headclerk Services"],
+      ["FULL ON HIRE / BQS SURVEY","Full On Hire / BQS Survey"],
+      ["BQS EXPENSES","BQS Expenses"],
+      ["GAS FREE INSPECTION","Gas Free Inspection"],
       ["PEST CONTROL","Pest Control"],
       ["OSRO ANNEX 18","OSRO Annex 18"],
       ["TAX ON CREDIT/DEBIT LAW 25.413","Tax on Credit/Debit"],
@@ -531,6 +537,7 @@ def generate():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
