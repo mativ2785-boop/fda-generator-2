@@ -1,7 +1,17 @@
 """
-classifier.py  —  ISA FDA Generator · Bahia Blanca
+classifier.py  —  ISA FDA Generator · San Lorenzo / Bahia Blanca / Necochea
 Detecta qué es cada PDF por contenido + nombre como fallback.
 Soporta SOFs escaneados (sin texto extraíble).
+
+FIXES aplicados:
+  - orden_transporte SENASA (viaje a SE.NA.SA) → clasificado como parte de GARBAGE,
+    no de MIGRATION. Nuevo tipo "orden_transporte_senasa" → GARBAGE COMPULSORY INSPECTION.
+  - Páginas de Libre Plática (sanidad_cert): reglas mejoradas para capturar
+    "Certificado de Libre Plática Cablegráfica" y variantes.
+  - Mandatory Holds: comprobante interno ahora incluye facturas de servicio de inspección
+    (Fides Control / LCI Report / agentes de inspección).
+  - Páginas de Maritime: la carátula (FACT CRED ELECT) y el Disbursement Account
+    siempre se saltean (skip).
 """
 
 import os, re, zipfile
@@ -63,16 +73,14 @@ def extract_zip(zip_path, dest_dir):
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CLASIFICADOR DE DOCUMENTOS
-#  Estrategia: contenido primero, nombre como fallback
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Detección por contenido (texto del PDF)
 DOC_TYPES_CONTENT = [
     ("sof",           ["DETAILS OF DAILY WORKING"]),
     ("sof",           ["Standard Statement on Fact"]),
     ("sof",           ["Statement of Facts"]),
-    ("sof",           ["Exceeding expectations", "VESSEL"]),  # SOF con logo ISA
-    # Maritime MUST come before bna — some Maritime expedientes contain BNA pages
+    ("sof",           ["Exceeding expectations", "VESSEL"]),
+    # Maritime MUST come before bna
     ("maritime",      ["SUCURSAL: Bahía Blanca", "FACT CRED ELECT"]),
     ("maritime",      ["SUCURSAL: Necochea", "FACT CRED ELECT"]),
     ("maritime",      ["San Lorenzo", "FACT CRED ELECT MiPyME"]),
@@ -81,12 +89,10 @@ DOC_TYPES_CONTENT = [
     ("bna",           ["Banco de la Naci", "Cotizaciones"]),
     ("bna",           ["Dolar U.S.A", "Compra", "Venta", "Fecha"]),
     ("facb_isa",      ["B00003", "INDEPENDENT SHIP AGENTS"]),
-
     ("facb_isa",      ["B00003", "AGENCY FEE"]),
     ("facb_isa",      ["B00003", "NOTA DE CREDITO"]),
     ("facb_isa",      ["B00003", "CREDIT NOTE"]),
     ("facb_isa",      ["B00003", "PORT DUES"]),
-    # FACA — charterers agents (A00003)
     ("facb_isa",      ["A00003", "Cod.001"]),
     ("facb_isa",      ["A00003", "SAN LORENZO PORT"]),
     ("facb_isa",      ["A00003", "BAHIA BLANCA PORT"]),
@@ -112,7 +118,7 @@ DOC_TYPES_CONTENT = [
     ("centro_nav",    ["cnav.org.ar"]),
     ("centro_nav",    ["centrodenavegaci"]),
     ("centro_nav",    ["Centro de Navegaci", "Florida 537"]),
-    # Necochea-specific providers
+    # Necochea
     ("consorcio_quequen", ["Consorcio de Gestión del Puerto Quequén"]),
     ("consorcio_quequen", ["Puerto Quequén", "Juan de Garay"]),
     ("consorcio_quequen", ["30-66634948-9"]),
@@ -121,35 +127,34 @@ DOC_TYPES_CONTENT = [
     ("melluso",       ["SERVICIO DE LANCHAS Y AMARRADORES PUERTO QUEQUEN"]),
     ("shore_gangway", ["SHORE GANGWAY", "30716643685"]),
     ("shore_gangway", ["SHORE GANGWAY", "CRANE SERVICE"]),
-    # San Lorenzo providers
+    # San Lorenzo
     ("terminal_portuario", ["TERMINAL 6 S.A."]),
     ("terminal_portuario", ["COFCO ARGENTINA"]),
     ("terminal_portuario", ["MOLINOS AGRO"]),
     ("terminal_portuario", ["CARGILL S.A.C.I."]),
     ("practicaje_rp",      ["Practicaje", "Río de la Plata", "ripla.com.ar"]),
     ("practicaje_rp",      ["PRACTICAJE RIO DE LA PLATA"]),
-    ("practicaje_rp",      ["33-70776769-9"]),   # CUIT Practicaje RP
+    ("practicaje_rp",      ["33-70776769-9"]),
     ("coprac",             ["C.O.P.R.A.C."]),
     ("coprac",             ["COPRAC"]),
-    ("coprac",             ["30-64926021-0"]),    # CUIT COPRAC
+    ("coprac",             ["30-64926021-0"]),
     ("rosario_pilots",     ["ROSARIO PILOTS"]),
     ("rosario_pilots",     ["rosariopilots.com"]),
-    ("rosario_pilots",     ["30-64794073-7"]),    # CUIT Rosario Pilots
+    ("rosario_pilots",     ["30-64794073-7"]),
     ("amarre_coral",       ["AMARRE CORAL"]),
-    ("amarre_coral",       ["30711479879"]),      # CUIT Amarre Coral
+    ("amarre_coral",       ["30711479879"]),
     ("glatil",             ["GLATIL"]),
-    ("glatil",             ["213452850015"]),     # RUC Glatil (Uruguay)
+    ("glatil",             ["213452850015"]),
     ("carp",               ["Comisión Administradora del Río de la Plata"]),
     ("carp",               ["COMISION ADM DEL RIO DE LP"]),
     ("carp",               ["peaje@comisionriodelaplata.org"]),
     ("agp",                ["ADMINISTRACION GENERAL DE PUERTOS"]),
-    ("agp",                ["30-54670628-8"]),    # CUIT AGP
+    ("agp",                ["30-54670628-8"]),
     ("edi_separovic",      ["SEPAROVIC EDI"]),
     ("edi_separovic",      ["SEPAROVIC"]),
-    ("edi_separovic",      ["20937939907"]),      # CUIT EDI Separovic
+    ("edi_separovic",      ["20937939907"]),
 ]
 
-# Detección por nombre de archivo (fallback cuando el PDF es imagen/escaneado)
 DOC_TYPES_NAME = [
     ("sof",           ["SOF", "Statement"]),
     ("bna",           ["Banco", "BNA", "Naci"]),
@@ -168,8 +173,7 @@ DOC_TYPES_NAME = [
     ("consorcio_quequen", ["QUEQUEN", "QUEQU"]),
     ("pilotaje",      ["MEYER", "ARANA"]),
     ("melluso",       ["MELLUSO"]),
-    ("shore_gangway",       ["GANGWAY", "PASARELA"]),
-    # San Lorenzo fallback por nombre
+    ("shore_gangway", ["GANGWAY", "PASARELA"]),
     ("terminal_portuario",  ["TERMINAL 6", "COFCO", "MOLINOS", "CARGILL"]),
     ("practicaje_rp",       ["PRACTICAJE RIO", "RIPLA", "120002"]),
     ("coprac",              ["COPRAC", "120083"]),
@@ -187,7 +191,6 @@ def detect_pilotaje_flags(pdf_path):
     Detecta si una factura de pilotaje tiene DEMORA y/o línea MANIOBRA con monto.
     Retorna (has_demora, has_maniobra, maniobra_amount)
     """
-    import fitz
     try:
         doc = fitz.open(pdf_path)
         text = ""
@@ -199,43 +202,69 @@ def detect_pilotaje_flags(pdf_path):
     text_up = text.upper()
     has_demora = "DEMORA" in text_up or "DELAY" in text_up
 
-    # Buscar línea MANIOBRAS con monto
     has_maniobra = False
     maniobra_amount = 0.0
-    import re
     lines = text.split("\n")
     for i, line in enumerate(lines):
         lu = line.upper()
         if "MANIOBRA" in lu:
-            # Formato 1: "1 MANIOBRAS EN ZC USD 2,520.00"
+            # Formato 1a: "1 MANIOBRAS EN ZC USD 2,520.00" (USD en la misma línea)
             m = re.search(r"USD\s*([\d,\.]+)", line)
             if m:
                 has_maniobra = True
                 maniobra_amount += float(m.group(1).replace(",", ""))
                 continue
-            # Formato 2 COPRAC: "||1 MANIOBRAS DE FONDEO" seguido de monto en columna
-            # El total está al final de la línea como número
-            m2 = re.search(r"([\d]+[.,][\d]+)\s*$", line)
-            if m2:
-                try:
-                    val = float(m2.group(1).replace(",", "."))
-                    if val > 0:
-                        has_maniobra = True
-                        maniobra_amount += val
-                        continue
-                except ValueError:
-                    pass
-            # Formato 3 COPRAC: "||1 MANIOBRAS DE FONDEO\n2.520,00||"
-            # monto en la siguiente línea, formato "2.520,00||"
-            for j in range(i+1, min(i+4, len(lines))):
-                # limpiar pipes y espacios
+
+            # Formato 1b: Ripla — "1 MANIOBRAS EN ZC" y el monto en la línea siguiente
+            # como "USD 2.520,00" (punto como miles, coma como decimal)
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                m_next = re.match(r"^USD\s*([\d\.]+,\d{2})$", next_line)
+                if m_next:
+                    try:
+                        raw = m_next.group(1).replace(".", "").replace(",", ".")
+                        val = float(raw)
+                        if val > 0:
+                            has_maniobra = True
+                            maniobra_amount += val
+                            continue
+                    except ValueError:
+                        pass
+                # También formato "USD 2,520.00" (coma miles, punto decimal)
+                m_next2 = re.match(r"^USD\s*([\d,]+\.\d{2})$", next_line)
+                if m_next2:
+                    try:
+                        val = float(m_next2.group(1).replace(",", ""))
+                        if val > 0:
+                            has_maniobra = True
+                            maniobra_amount += val
+                            continue
+                    except ValueError:
+                        pass
+
+            # Formato 2 COPRAC: "||1 MANIOBRAS DE FONDEO" y monto "2.520,00||" en siguiente línea
+            for j in range(i + 1, min(i + 4, len(lines))):
+                # Limpiar pipes y espacios
                 clean = lines[j].replace("|", "").strip()
-                m3 = re.match(r"^([\d]+[.,][\d]+)$", clean)
+                if not clean:
+                    continue
+                # Formato COPRAC: "2.520,00" (punto=miles, coma=decimal)
+                m3 = re.match(r"^([\d]+\.[\d]{3},[\d]{2})$", clean)
                 if m3:
                     try:
-                        # COPRAC usa coma como separador de miles: "2.520,00" → 2520.00
                         raw = m3.group(1).replace(".", "").replace(",", ".")
                         val = float(raw)
+                        if val > 100:
+                            has_maniobra = True
+                            maniobra_amount += val
+                    except ValueError:
+                        pass
+                    break
+                # Formato alternativo: número simple "2520.00" o "2,520.00"
+                m4 = re.match(r"^([\d,]+\.[\d]{2})$", clean)
+                if m4:
+                    try:
+                        val = float(m4.group(1).replace(",", ""))
                         if val > 100:
                             has_maniobra = True
                             maniobra_amount += val
@@ -252,13 +281,11 @@ def classify_doc(pdf_path):
     fname = os.path.basename(pdf_path).upper()
     text  = read_text(pdf_path, max_pages=3)
 
-    # ── Por contenido ─────────────────────────────────────────────────────────
     if text.strip():
         for (dtype, keywords) in DOC_TYPES_CONTENT:
             if all(kw in text for kw in keywords):
                 return dtype
 
-    # ── Por nombre (fallback para PDFs escaneados sin texto) ──────────────────
     for (dtype, keywords) in DOC_TYPES_NAME:
         if any(kw in fname for kw in keywords):
             return dtype
@@ -275,6 +302,9 @@ MARITIME_PAGE_RULES = [
     ("skip",              ["MiPyME"]),
     ("skip",              ["Disbursement Account"]),
     ("skip",              ["DISBURSEMENT ACCOUNT"]),
+    # BNA interno dentro de Maritime → skip (usar BNA externo)
+    ("skip",              ["Cotizaciones históricas", "Dolar U.S.A"]),
+    ("skip",              ["Banco de la Naci", "Cotizaciones"]),
     ("headclerk_break",   ["HEAD CLERK", "Breakdown"]),
     ("headclerk_liq",     ["LIQUIDACION DE PAGO A ENCARGADOS"]),
     ("watchmen_break",    ["WATCHMEN", "Breakdown"]),
@@ -285,21 +315,34 @@ MARITIME_PAGE_RULES = [
     ("afip_lman",         ["LMAN", "DATOS AFIP"]),
     ("se_inward",         ["SOLICITUD DE HABILITACION", "FORMALIZACION DE ENTRADA"]),
     ("se_inward",         ["SOLICITUD DE HABILITACION", "FEVA"]),
-
     ("se_permanencia",    ["SOLICITUD DE HABILITACION", "permanencia"]),
     ("se_permanencia",    ["SOLICITUD DE HABILITACION", "PERMANENCIA"]),
     ("se_permanencia",    ["SOLICITUD DE HABILITACION DE", "SERVICIOS EXTRAORDINARIOS", "09:"]),
-    ("se_permanencia",    ["SOLICITUD DE HABILITACION DE", "SERVICIOS EXTRAORDINARIOS"]),
     ("se_rancho",         ["SOLICITUD DE HABILITACION", "RANCHO"]),
     ("se_rancho",         ["SOLICITUD DE HABILITACION", "VLSFO"]),
+    # se_cargo: exportacion zona primaria / carga
+    ("se_cargo",          ["SOLICITUD DE HABILITACION", "ZONA PRIMARIA"]),
+    ("se_cargo",          ["SOLICITUD DE HABILITACION", "ECZP"]),
+    ("se_cargo",          ["SOLICITUD DE HABILITACION", "HARINA"]),
     ("se_cargo",          ["SOLICITUD DE HABILITACION", "CARGO"]),
     ("se_cargo",          ["SOLICITUD DE HABILITACION", "carga"]),
+    # SSEE generico fallback -> Custom House Expenses
+    ("se_inward",         ["SOLICITUD DE HABILITACION DE", "SERVICIOS EXTRAORDINARIOS"]),
     ("migraciones_liq",   ["Migraciones", "quincena"]),
     ("migraciones_liq",   ["Migraciones", "Liquidaci"]),
     ("migraciones_sol",   ["Servicios Marítimos y Fluviales", "Solicitud de Servicio"]),
+    # FIX #6/#8: Orden de transporte — distinguir Migration vs SENASA
+    # Si el detalle del viaje menciona SE.NA.SA → Garbage; si menciona MIGRATION → Migration
+    ("orden_transporte_senasa", ["ORDEN DE TRANSPORTE", "SE.NA.SA"]),
+    ("orden_transporte_senasa", ["ORDEN DE TRANSPORTE", "SENASA OFFICE"]),
     ("orden_transporte",  ["ORDEN DE TRANSPORTE"]),
+    # FIX #7: Libre Plática — todas las variantes
+    ("sanidad_cert",      ["Certificado de Libre Plática Cablegráfica"]),
+    ("sanidad_cert",      ["CERTIFICADO DE LIBRE PLÁTICA CABLEGRÁFICA"]),
     ("sanidad_cert",      ["Libre Plática"]),
     ("sanidad_cert",      ["Certificado de Libre"]),
+    ("sanidad_eval",      ["EVALUACIÓN DE RIESGOS"]),          # página 2 del certificado
+    ("sanidad_eval",      ["Evaluación de Libre Plática"]),
     ("sanidad_transf",    ["MINISTERIO DE SALUD", "COMPULSORY SANITARY"]),
     ("sanidad_transf",    ["MINISTERIO DE SALUD"]),
     ("sanidad_recibo",    ["FREE PRACTIQUE", "Recib"]),
@@ -313,6 +356,17 @@ MARITIME_PAGE_RULES = [
     ("senasa",            ["BOLETA DE PAGO", "MARITIME"]),
     ("senasa",            ["Barreras Sanitarias", "BOLETA"]),
     ("senasa",            ["Barreras Sanitarias", "ARANCEL"]),
+    # FIX #9: Compulsory Inspection — incluye el comprobante interno Y facturas de inspección
+    ("compulsory_insp",   ["COMPULSORY INSPECTION BY PRIVATE SURVEYORS"]),
+    ("compulsory_insp",   ["COMPULSORY INSPECTION", "PRIVATE SURVEYORS"]),
+    # Facturas de servicio de inspección (Fides Control, etc.)
+    ("compulsory_insp",   ["LCI REPORT"]),
+    ("compulsory_insp",   ["Fides Control", "INSPECTION"]),
+    # Factura electrónica del servicio de inspección (+)))))): texto característico
+    ("compulsory_insp",   ["FACTURA SERV.ELECTR"]),
+    ("compulsory_insp",   ["FACTURA SERV", "INSPEC"]),
+    ("compulsory_reinsp", ["RE-INSPECTION", "PRIVATE SURVEYORS"]),
+    ("compulsory_reinsp", ["REINSPECTION", "PRIVATE SURVEYORS"]),
     ("amarradores_pag",   ["AMARRADORES"]),
     ("meyer_arana",       ["MEYER", "ARANA", "Necochea"]),
     ("meyer_arana",       ["MEYER  ARANA", "Período Facturado"]),
@@ -330,45 +384,87 @@ MARITIME_PAGE_RULES = [
     ("enapro",            ["Ente Administrador Puerto Rosario"]),
     ("enapro",            ["enapro.com.ar"]),
     ("enapro",            ["ENAPRO"]),
-    ("compulsory_insp",   ["COMPULSORY INSPECTION BY PRIVATE SURVEYORS"]),
-    ("compulsory_reinsp", ["RE-INSPECTION", "PRIVATE SURVEYORS"]),
-    ("compulsory_reinsp", ["REINSPECTION", "PRIVATE SURVEYORS"]),
 ]
 
 PAGE_TO_VOUCHER = {
-    "headclerk_break":   "HEADCLERK COMPULSORY SERVICES",
-    "headclerk_liq":     "HEADCLERK COMPULSORY SERVICES",
-    "watchmen_break":    "WATCHMEN COMPULSORY SERVICES",
-    "watchmen_liq":      "WATCHMEN COMPULSORY SERVICES",
-    "afip_lman":         "CUSTOM HOUSE EXPENSES",
-    "se_inward":         "CUSTOM HOUSE EXPENSES",
-    "se_permanencia":    "CUSTOM HOUSE PERMANENCE",
-    "se_rancho":         "CUSTOM HOUSE (BUNKERING)",
-    "se_cargo":          "CUSTOM HOUSE EXPENSE (CARGO)",
-    "migraciones_liq":   "MIGRATION EXPENSES",
-    "migraciones_sol":   "MIGRATION EXPENSES",
-    "orden_transporte":  "MIGRATION EXPENSES",
-    "sanidad_cert":      "SANITARY DUES AND FREE PRATIQUE",
-    "sanidad_transf":    "SANITARY DUES AND FREE PRATIQUE",
-    "sanidad_recibo":    "SANITARY DUES AND FREE PRATIQUE",
-    "senasa":            "GARBAGE COMPULSORY INSPECTION",
-    "amarradores_pag":   "MOORING & UNMOORING SERVICES",
-    "nav_center":        "NAVIGATION CENTER CONTRIBUTION",
-    "mooring_img":       None,   # imágenes de scan → omitir
-    "meyer_arana":       "PORT PILOTAGE",
-    "melluso_pag":       "MOORING & UNMOORING SERVICES",
-    "melluso":           "MOORING & UNMOORING SERVICES",
-    "shore_gangway_pag": "SHORE GANGWAY",
-    "osro":              "OSRO ANNEX 18",
-    "pest_pag":          "PEST CONTROL",
-    "enapro":            "ENTRANCE AND LIGHT DUES",
-    "compulsory_insp":   "MANDATORY HOLDS INSPECTION",
-    "compulsory_reinsp": "MANDATORY HOLDS RE-INSPECTION",
-    "skip":              None,
-    "skip_dup":          None,
-    "disbursement":      None,
-    "unknown":           None,
+    "headclerk_break":        "HEADCLERK COMPULSORY SERVICES",
+    "headclerk_liq":          "HEADCLERK COMPULSORY SERVICES",
+    "watchmen_break":         "WATCHMEN COMPULSORY SERVICES",
+    "watchmen_liq":           "WATCHMEN COMPULSORY SERVICES",
+    "afip_lman":              "CUSTOM HOUSE EXPENSES",
+    "se_inward":              "CUSTOM HOUSE EXPENSES",
+    "se_permanencia":         "CUSTOM HOUSE PERMANENCE",
+    "se_rancho":              "CUSTOM HOUSE (BUNKERING)",
+    "se_cargo":               "CUSTOM HOUSE EXPENSE (CARGO)",
+    "migraciones_liq":        "MIGRATION EXPENSES",
+    "migraciones_sol":        "MIGRATION EXPENSES",
+    "orden_transporte":       "MIGRATION EXPENSES",
+    # FIX #6/#8: orden de transporte SENASA → Garbage
+    "orden_transporte_senasa": "GARBAGE COMPULSORY INSPECTION",
+    "sanidad_cert":           "SANITARY DUES AND FREE PRATIQUE",
+    "sanidad_eval":           "SANITARY DUES AND FREE PRATIQUE",   # FIX #7
+    "sanidad_transf":         "SANITARY DUES AND FREE PRATIQUE",
+    "sanidad_recibo":         "SANITARY DUES AND FREE PRATIQUE",
+    "senasa":                 "GARBAGE COMPULSORY INSPECTION",
+    "amarradores_pag":        "MOORING & UNMOORING SERVICES",
+    "nav_center":             "NAVIGATION CENTER CONTRIBUTION",
+    "mooring_img":            None,
+    "meyer_arana":            "PORT PILOTAGE",
+    "melluso_pag":            "MOORING & UNMOORING SERVICES",
+    "melluso":                "MOORING & UNMOORING SERVICES",
+    "shore_gangway_pag":      "SHORE GANGWAY",
+    "osro":                   "OSRO ANNEX 18",
+    "pest_pag":               "PEST CONTROL",
+    "enapro":                 "ENTRANCE AND LIGHT DUES",
+    "compulsory_insp":        "MANDATORY HOLDS INSPECTION",    # FIX #9
+    "compulsory_reinsp":      "MANDATORY HOLDS RE-INSPECTION",
+    "skip":                   None,
+    "skip_dup":               None,
+    "disbursement":           None,
+    "unknown":                None,
 }
+
+
+def _classify_image_page_by_context(previous_pages, pdf_path, idx):
+    """
+    Clasifica una página imagen basándose en el contexto de páginas previas.
+    Si las páginas anteriores son migraciones o sanidad → probablemente Libre Plática.
+    Si las páginas anteriores son mooring → mooring_img.
+    """
+    if not previous_pages:
+        return "mooring_img"
+    
+    # Revisar las últimas páginas clasificadas
+    recent_vouchers = [p.get("voucher") for p in previous_pages[-5:] if p.get("voucher")]
+    recent_cats     = [p.get("category") for p in previous_pages[-5:]]
+    
+    # Si la página anterior fue compulsory_insp → esta imagen también es parte de inspección
+    if recent_cats and recent_cats[-1] in ["compulsory_insp"]:
+        return "compulsory_insp"  # → MANDATORY HOLDS INSPECTION
+    
+    # Si las páginas anteriores son migration o sanidad → esta es Libre Plática (sanidad_cert)
+    sanidad_context = any(v in ["MIGRATION EXPENSES", "SANITARY DUES AND FREE PRATIQUE"]
+                          for v in recent_vouchers)
+    # Si hay páginas de mooring cercanas y NO hay contexto sanidad → mooring
+    if sanidad_context:
+        return "sanidad_cert"  # → SANITARY DUES AND FREE PRATIQUE
+    
+    # Si la página anterior fue mooring o también imagen sin contexto especial → mooring
+    if recent_cats and recent_cats[-1] in ["mooring_img", "amarradores_pag"]:
+        return "mooring_img"
+    
+    # Si el texto de páginas cercanas sugiere sanidad
+    try:
+        doc = fitz.open(pdf_path)
+        # Verificar páginas siguientes para ver si hay sanidad_transf
+        for j in range(idx + 1, min(idx + 3, doc.page_count)):
+            next_text = doc[j].get_text()
+            if "MINISTERIO DE SALUD" in next_text or "FREE PRACTIQUE" in next_text:
+                return "sanidad_cert"
+    except Exception:
+        pass
+    
+    return "mooring_img"
 
 
 def classify_maritime_pages(pdf_path):
@@ -380,8 +476,11 @@ def classify_maritime_pages(pdf_path):
         text = read_page(pdf_path, i)
 
         if is_image_page(pdf_path, i):
-            result.append({"page": i, "category": "mooring_img",
-                           "voucher": "MOORING & UNMOORING SERVICES"})
+            # Detectar si la imagen es parte de Sanitary (Libre Plática) o Mandatory Holds
+            # basándose en las páginas que la rodean
+            category = _classify_image_page_by_context(result, pdf_path, i)
+            voucher = PAGE_TO_VOUCHER.get(category, "MOORING & UNMOORING SERVICES")
+            result.append({"page": i, "category": category, "voucher": voucher})
             continue
 
         cat = "unknown"
@@ -420,7 +519,6 @@ def extract_facb(pdf_path):
     if m:
         d["tc"] = float(m.group(1).replace(",", ""))
 
-    # Total USD — FACBs: SubTotal=Total. FACAs (A00003): TOTAL incluye impuestos.
     if "A00003" in text:
         nums = [l.strip() for l in text.split("\n") if re.match(r"^[\d,]+\.\d{2}$", l.strip())]
         if nums:
@@ -444,22 +542,20 @@ def extract_facb(pdf_path):
     if m:
         d["client"] = m.group(1).strip()
 
-    # Buque desde "M/V NOMBRE  DD-MM-YYYY"
     m = re.search(r"M/V\s+([A-Z][A-Z0-9\s\-]+?)\s+\d{2}[-/]\d{2}[-/]", text)
     if m:
         d["vessel"] = "M/V " + m.group(1).strip()
 
-    # Datos bancarios de la factura
     if "Santander" in text:
-        d["bank_name"]    = "Santander Argentina"
+        d["bank_name"] = "Santander Argentina"
         m_acct = re.search(r"Account Number:\s*\$?([\d\-/]+)", text)
         m_cbu  = re.search(r"CBU:\s*([\d]+)", text)
         m_bene = re.search(r"Beneficiary: ([^\n]+)", text)
         m_cuit = re.search(r"CUIT:\s*([\d\-]+)", text)
-        if m_acct: d["bank_account"] = m_acct.group(1).strip()
-        if m_cbu:  d["bank_cbu"]     = m_cbu.group(1).strip()
+        if m_acct: d["bank_account"]     = m_acct.group(1).strip()
+        if m_cbu:  d["bank_cbu"]         = m_cbu.group(1).strip()
         if m_bene: d["bank_beneficiary"] = m_bene.group(1).strip()
-        if m_cuit: d["bank_cuit"]    = m_cuit.group(1).strip()
+        if m_cuit: d["bank_cuit"]        = m_cuit.group(1).strip()
     elif "Citibank" in text:
         d["bank_name"]        = "Citibank N.A., New York Branch"
         d["bank_aba"]         = "21000089"
@@ -467,7 +563,6 @@ def extract_facb(pdf_path):
         d["bank_account"]     = "36404074"
         d["bank_beneficiary"] = "INDEPENDENT SHIP AGENTS S.A."
 
-    # Puerto desde FACB/FACA
     if "NECOCHEA PORT" in text.upper():
         d["port"] = "Necochea Port"
     elif "BAHIA BLANCA PORT" in text.upper():
@@ -487,22 +582,21 @@ def extract_facb(pdf_path):
 # ══════════════════════════════════════════════════════════════════════════════
 
 MONTH_MAP = {
-    "01":"January","02":"February","03":"March","04":"April",
-    "05":"May","06":"June","07":"July","08":"August",
-    "09":"September","10":"October","11":"November","12":"December",
+    "01": "January", "02": "February", "03": "March",    "04": "April",
+    "05": "May",     "06": "June",     "07": "July",     "08": "August",
+    "09": "September","10": "October", "11": "November", "12": "December",
 }
+
 
 def extract_sof(pdf_path):
     """Extrae vessel, sailed, port. Funciona con texto y con PDFs escaneados."""
     text = read_text(pdf_path, max_pages=3)
     d    = {}
 
-    # Vessel
-    m = re.search(r'm\.v\.\s*["\']?([A-Z][A-Z0-9\s"\']+?)["\']?\s*[\r\n]', text)
+    m = re.search(r'm\.v\.\s*["\']?([A-Z][A-Z0-9\s"\']+ ?)["\']?\s*[\r\n]', text)
     if m:
         d["vessel"] = "M/V " + m.group(1).strip().strip("\"'")
 
-    # Sailed
     m = re.search(r'Sailed?\s*[\r\n\s:]+(\d{1,2})/(\d{2})/(\d{4})', text)
     if m:
         day, mon, yr = m.group(1), m.group(2), m.group(3)
@@ -524,6 +618,22 @@ def extract_sof(pdf_path):
 #  ANÁLISIS COMPLETO DEL DIRECTORIO
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _extract_sailed_from_maritime(pdf_path):
+    """Extrae la fecha de salida del Disbursement Account interno de Maritime."""
+    try:
+        doc = fitz.open(pdf_path)
+        for i in range(min(3, doc.page_count)):
+            text = doc[i].get_text()
+            if "SAILED" in text.upper() and "DISBURSEMENT" in text.upper():
+                m = re.search(r"SAILED[\s\r\n]+(\d{1,2})/(\d{2})/(\d{4})", text)
+                if m:
+                    day, mon, yr = m.group(1), m.group(2), m.group(3)
+                    return f"{MONTH_MAP.get(mon, mon)} {int(day)}, {yr}"
+    except Exception:
+        pass
+    return None
+
+
 def analyze(work_dir):
     pdfs = sorted(f for f in os.listdir(work_dir) if f.lower().endswith(".pdf"))
 
@@ -532,9 +642,7 @@ def analyze(work_dir):
         "facbs": [], "consorcio": [], "donmar": [],
         "puerto_mariel": [], "maritime": [],
         "amarradores": [], "ammoca": [], "centro_nav": [],
-        # Necochea-specific
         "consorcio_quequen": [], "pilotaje": [], "melluso": [], "shore_gangway": [],
-        # San Lorenzo providers
         "terminal_portuario": [], "practicaje_rp": [], "coprac": [],
         "rosario_pilots": [], "amarre_coral": [], "glatil": [],
         "carp": [], "agp": [], "edi_separovic": [],
@@ -554,8 +662,11 @@ def analyze(work_dir):
             result["sailed"] = result["sailed"] or sof.get("sailed")
             result["port"]   = result["port"]   or sof.get("port")
 
+
+
         elif dtype == "bna":
-            result["bna"] = fname
+            # Puede haber múltiples BNAs (uno por TC). Guardar lista completa.
+            result.setdefault("bna_list", []).append(fname)
 
         elif dtype == "facb_isa":
             d = extract_facb(fpath)
@@ -586,10 +697,8 @@ def analyze(work_dir):
             result["ammoca"].append(fname)
         elif dtype == "centro_nav":
             result["centro_nav"].append(fname)
-        # Necochea-specific
         elif dtype == "consorcio_quequen":
             result["consorcio_quequen"].append(fname)
-            # Also add to "consorcio" for unified port detection
             result["consorcio"].append(fname)
         elif dtype == "pilotaje":
             result["pilotaje"].append(fname)
@@ -601,28 +710,38 @@ def analyze(work_dir):
             result["terminal_portuario"].append(fname)
         elif dtype == "practicaje_rp":
             flags = detect_pilotaje_flags(fpath)
-            result["practicaje_rp"].append({"filename": fname,
-                "has_demora": flags[0], "has_maniobra": flags[1], "maniobra_amount": flags[2]})
+            result["practicaje_rp"].append({
+                "filename": fname,
+                "has_demora": flags[0], "has_maniobra": flags[1], "maniobra_amount": flags[2]
+            })
         elif dtype == "coprac":
             flags = detect_pilotaje_flags(fpath)
-            result["coprac"].append({"filename": fname,
-                "has_demora": flags[0], "has_maniobra": flags[1], "maniobra_amount": flags[2]})
+            result["coprac"].append({
+                "filename": fname,
+                "has_demora": flags[0], "has_maniobra": flags[1], "maniobra_amount": flags[2]
+            })
         elif dtype == "rosario_pilots":
             flags = detect_pilotaje_flags(fpath)
-            result["rosario_pilots"].append({"filename": fname,
-                "has_demora": flags[0], "has_maniobra": flags[1], "maniobra_amount": flags[2]})
+            result["rosario_pilots"].append({
+                "filename": fname,
+                "has_demora": flags[0], "has_maniobra": flags[1], "maniobra_amount": flags[2]
+            })
         elif dtype == "amarre_coral":
-            # Detectar si es clearance (embark/disembark inspectors) o mooring
             import fitz as _fitz
             try:
                 _text = ""
-                for _pg in _fitz.open(fpath): _text += _pg.get_text()
-            except: _text = ""
+                for _pg in _fitz.open(fpath):
+                    _text += _pg.get_text()
+            except Exception:
+                _text = ""
             _tu = _text.upper()
-            is_clearance = ("DISEMBARK" in _tu and "INSPECTOR" in _tu) or ("EMBARK" in _tu and "INSPECTOR" in _tu)
-            is_mooring   = "MOORING" in _tu and ("UNMOORING" in _tu or "UNMOORING" in _tu)
-            result["amarre_coral"].append({"filename": fname,
-                "is_clearance": is_clearance, "is_mooring": is_mooring})
+            is_clearance = (("DISEMBARK" in _tu and "INSPECTOR" in _tu) or
+                            ("EMBARK" in _tu and "INSPECTOR" in _tu))
+            is_mooring   = "MOORING" in _tu and ("UNMOORING" in _tu)
+            result["amarre_coral"].append({
+                "filename": fname,
+                "is_clearance": is_clearance, "is_mooring": is_mooring
+            })
         elif dtype == "glatil":
             result["glatil"].append(fname)
         elif dtype == "carp":
@@ -634,12 +753,36 @@ def analyze(work_dir):
         else:
             result["unknown"].append(fname)
 
+    # Post-proceso: ordenar BNAs por TC (el de menor TC es el principal)
+    bna_list = result.get("bna_list", [])
+    if bna_list:
+        import fitz as _fitz, re as _re
+        def _get_bna_tc_quick(fname):
+            try:
+                doc = _fitz.open(os.path.join(work_dir, fname))
+                text = doc[0].get_text()
+                vals = [float(m.replace(",",".")) for m in _re.findall(r"[\d]+[,.][\d]{4}", text)]
+                return max(vals) if vals else 9999
+            except Exception:
+                return 9999
+        bna_list_sorted = sorted(bna_list, key=_get_bna_tc_quick)
+        result["bna"]       = bna_list_sorted[0] if bna_list_sorted else None
+        result["bna_extra"] = bna_list_sorted[1:] if len(bna_list_sorted) > 1 else []
+
+    # Post-proceso: si sailed sigue vacío, buscarlo en Maritime
+    if not result.get("sailed"):
+        for m in result.get("maritime", []):
+            _s = _extract_sailed_from_maritime(os.path.join(work_dir, m["filename"]))
+            if _s:
+                result["sailed"] = _s
+                break
+
     # Ordenar: agency primero
     type_order = {"agency": 0, "ncb": 1, "port_expenses": 2}
-    result["facbs"].sort(key=lambda f: (type_order.get(f.get("type",""), 9), f.get("number","")))
+    result["facbs"].sort(key=lambda f: (type_order.get(f.get("type", ""), 9), f.get("number", "")))
     for tc in result["tc_groups"]:
         result["tc_groups"][tc].sort(
-            key=lambda x: 0 if x[1]=="Agency fee" else (1 if "crédito" in x[1] else 2)
+            key=lambda x: 0 if x[1] == "Agency fee" else (1 if "crédito" in x[1] else 2)
         )
 
     result["consorcio"].sort()
@@ -647,6 +790,7 @@ def analyze(work_dir):
     result["puerto_mariel"].sort()
 
     return result
+
 
 
 
