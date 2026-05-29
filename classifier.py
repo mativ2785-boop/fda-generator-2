@@ -57,17 +57,48 @@ def is_image_page(pdf_path, idx):
         return False
 
 
+MAX_UNCOMPRESSED_SIZE = 300 * 1024 * 1024   # 300 MB total descomprimido
+MAX_FILE_SIZE         = 50  * 1024 * 1024   # 50 MB por archivo individual
+MAX_PDF_COUNT         = 200                 # máximo de PDFs en el ZIP
+
+
 def extract_zip(zip_path, dest_dir):
-    """Extrae los PDFs del ZIP al directorio destino."""
+    """Extrae los PDFs del ZIP al directorio destino.
+
+    Protecciones:
+    - Límite de tamaño total descomprimido (ZIP bomb)
+    - Límite por archivo individual
+    - Límite de cantidad de PDFs
+    - Path traversal bloqueado (os.path.basename)
+    """
     os.makedirs(dest_dir, exist_ok=True)
     with zipfile.ZipFile(zip_path, "r") as z:
-        for member in z.namelist():
-            fname = os.path.basename(member)
+        # Verificar tamaño total antes de extraer (ZIP bomb protection)
+        total_size = sum(info.file_size for info in z.infolist())
+        if total_size > MAX_UNCOMPRESSED_SIZE:
+            raise ValueError(
+                f"ZIP demasiado grande: {total_size/1024/1024:.0f} MB "
+                f"(máximo {MAX_UNCOMPRESSED_SIZE//1024//1024} MB descomprimido)"
+            )
+
+        pdf_count = 0
+        for member in z.infolist():
+            fname = os.path.basename(member.filename)
             if not fname or not fname.lower().endswith(".pdf"):
                 continue
+
+            # Límite por archivo
+            if member.file_size > MAX_FILE_SIZE:
+                continue   # silenciosamente ignorar archivos individuales enormes
+
+            pdf_count += 1
+            if pdf_count > MAX_PDF_COUNT:
+                break   # truncar en lugar de fallar — los primeros 200 son suficientes
+
             dst = os.path.join(dest_dir, fname)
-            with z.open(member) as src, open(dst, "wb") as out:
-                out.write(src.read())
+            with z.open(member) as src_f, open(dst, "wb") as out:
+                out.write(src_f.read())
+
     return [f for f in os.listdir(dest_dir) if f.lower().endswith(".pdf")]
 
 
@@ -888,6 +919,30 @@ def analyze(work_dir):
     result["puerto_mariel"].sort()
 
     return result
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
