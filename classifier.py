@@ -624,7 +624,12 @@ def extract_facb(pdf_path):
     if "AGENCY FEE" in text.upper():
         d["type"]  = "agency"
         d["label"] = "Agency fee"
-    elif "NCB" in text or "NOTA DE CREDITO" in text.upper():
+    elif ("NCB" in text or
+          "NOTA DE CREDITO" in text.upper() or
+          "NOTA DE CRÉDITO" in text.upper() or
+          "CREDIT NOTE" in text.upper() or
+          "Cod.008" in text):
+        # FIX B4: detectar NCB con y sin tilde, y por código de comprobante
         d["type"]  = "ncb"
         d["label"] = "Nota de crédito"
     else:
@@ -883,6 +888,18 @@ def analyze(work_dir):
     result["puerto_mariel"].sort()
 
     return result
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
