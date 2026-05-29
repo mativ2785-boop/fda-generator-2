@@ -3,5 +3,6 @@ services:
     name: isa-fda-generator
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn app:app --workers 2 --timeout 120 --max-requests 500 --max-requests-jitter 50 --worker-class sync
     plan: free
+    healthCheckPath: /health
