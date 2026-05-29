@@ -498,10 +498,15 @@ def build_fda(analysis, work_dir, output_path, advance, date):
     # Ordenar tc_groups: dentro de cada TC → NCBs, agency, port_expenses
     for tc in tc_groups:
         rows = tc_groups[tc]
-        ncbs     = [(n, l, a) for (n, l, a) in rows if "crédito" in l.lower() or "ncb" in l.lower()]
+        def _is_ncb(lbl):
+            ll = lbl.lower()
+            # FIX B6: detectar NCB con tilde, sin tilde, y por tipo ya extraído
+            return ("crédito" in ll or "credito" in ll or "ncb" in ll or
+                    "credit note" in ll or "nota de cr" in ll)
+        ncbs     = [(n, l, a) for (n, l, a) in rows if _is_ncb(l)]
         agency   = [(n, l, a) for (n, l, a) in rows if "agency" in l.lower()]
         port_exp = [(n, l, a) for (n, l, a) in rows
-                    if "crédito" not in l.lower() and "ncb" not in l.lower() and "agency" not in l.lower()]
+                    if not _is_ncb(l) and "agency" not in l.lower()]
         # REGLA ISA: dentro de cada TC → Agency Fee PRIMERO, luego NCB(s), luego Port Expenses
         tc_groups[tc] = agency + ncbs + port_exp
 
@@ -566,16 +571,22 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         tc = entry["tc"]
         concept = entry["concept"]
 
-        # Para el TC base: insertar las FACB de port_expenses antes del voucher Port Dues
-        if tc == tc_agency and tc not in tc_port_expenses_inserted and concept != "AGENCY FEE":
+        # Para el TC base: insertar las FACB de port_expenses SIEMPRE después del
+        # voucher AGENCY FEE (antes del primer voucher de CUALQUIER TC que no sea
+        # el Agency Fee). Esto cubre el caso donde todos los demás vouchers son de
+        # TCs distintos al TC base.
+        if tc_agency not in tc_port_expenses_inserted and concept != "AGENCY FEE":
             for (num, lbl, amt) in tc_groups.get(tc_agency, []):
-                if "port" in lbl.lower() and "agency" not in lbl.lower() and "crédito" not in lbl.lower():
+                lbl_n = lbl.lower()
+                # Solo port_expenses: ni agency ni NCB
+                is_port_exp = ("port" in lbl_n or "expenses" in lbl_n) and "agency" not in lbl_n and "cr" not in lbl_n
+                if is_port_exp:
                     fname = facb_files.get(num)
                     if fname and os.path.exists(fp_fn(fname)):
-                        print(f"  [{step}] FACB {num} — {lbl}  (TC {tc_agency:g})")
+                        print(f"  [{step}] FACB {num} — {lbl}  (TC {tc_agency:g}, port_exp base)")
                         add_pdf(writer, fp_fn(fname))
                         step += 1
-            tc_port_expenses_inserted.add(tc)
+            tc_port_expenses_inserted.add(tc_agency)
 
         # Para TCs distintos al del Agency Fee: insertar BNA extra + FACBs antes del primer voucher
         if tc not in tc_inserted:
@@ -605,8 +616,8 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         display_concept = concept
         if concept in ("TOLL DUES (AGP)", "TOLL DUES (CARP)"):
             display_concept = "TOLL DUES"
-        elif concept == "PILOT LAUNCH TRANSPORTATION RIVER PLATE":
-            display_concept = "RIVER PLATE PILOTAGE"
+        # FIX B5: Pilot Launch Transportation River Plate se muestra con su nombre correcto
+        # NO como "RIVER PLATE PILOTAGE" — son vouchers distintos
         print(f"  [{step}] Voucher: {display_concept}")
         for pg in make_voucher(display_concept, amount, tc, vessel, sailed, port_v).pages:
             writer.add_page(pg)
@@ -637,6 +648,17 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         "vessel":    vessel,
         "client":    client,
     }
+
+
+
+
+
+
+
+
+
+
+
 
 
 
