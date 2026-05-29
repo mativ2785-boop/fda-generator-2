@@ -231,6 +231,7 @@ def make_summary(vessel, port, sailed, date, client, advance, tc_groups, bank_in
                 all_agency.append((num, lbl, amt))
             else:
                 all_port_exp.append((num, lbl, amt))
+    # REGLA ISA: en el sumario → NCBs primero (en rojo), luego Agency Fee, luego Port Expenses
     all_rows = all_ncbs + all_agency + all_port_exp
 
     ry = tbl_top - HDR_H
@@ -501,7 +502,8 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         agency   = [(n, l, a) for (n, l, a) in rows if "agency" in l.lower()]
         port_exp = [(n, l, a) for (n, l, a) in rows
                     if "crédito" not in l.lower() and "ncb" not in l.lower() and "agency" not in l.lower()]
-        tc_groups[tc] = ncbs + agency + port_exp
+        # REGLA ISA: dentro de cada TC → Agency Fee PRIMERO, luego NCB(s), luego Port Expenses
+        tc_groups[tc] = agency + ncbs + port_exp
 
     # ── 1. Sumario ────────────────────────────────────────────────────────────
     print("  [1] Sumario...")
@@ -518,13 +520,17 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         print("  [2] SOF...")
         add_pdf(writer, fp_fn(analysis["sof"]))
 
-    # ── 3. BNA (solo si existe — Bahia Blanca lo incluye, San Lorenzo no) ─────
-    if analysis["bna"]:
+    # ── 3. BNA (solo Bahia Blanca lo incluye — San Lorenzo y otros NO) ─────────
+    # Detectar puerto ANTES de insertar BNA para saber si corresponde
+    port_config = _detect_port(analysis)
+    _port_upper = (analysis.get("port") or "").upper()
+    _is_bahia_blanca = "BAHIA BLANCA" in _port_upper or "BAHÍA BLANCA" in _port_upper
+    if analysis["bna"] and _is_bahia_blanca:
         print("  [3] BNA...")
         add_pdf(writer, fp_fn(analysis["bna"]))
 
     # ── 4+. FACBs y vouchers ──────────────────────────────────────────────────
-    port_config = _detect_port(analysis)
+    # (port_config ya detectado arriba)
     invoice_map = port_config.build_invoice_map(analysis, work_dir, line_amounts)
 
     # FIX #1: Determinar el TC de cada entry para saber cuándo insertar FACBs.
@@ -573,15 +579,16 @@ def build_fda(analysis, work_dir, output_path, advance, date):
 
         # Para TCs distintos al del Agency Fee: insertar BNA extra + FACBs antes del primer voucher
         if tc not in tc_inserted:
-            # Insertar BNA extra si corresponde a este TC
-            bna_extra_list = analysis.get("bna_extra", [])
-            for bna_extra in bna_extra_list:
-                # Verificar si el BNA corresponde a este TC (por cotización)
-                bna_tc = _get_bna_tc(fp_fn(bna_extra))
-                if bna_tc and abs(bna_tc - tc) < 1:
-                    print(f"  [{step}] BNA extra TC {tc:g}")
-                    add_pdf(writer, fp_fn(bna_extra))
-                    step += 1
+            # Insertar BNA extra solo en Bahia Blanca — San Lorenzo NO incluye BNA
+            if _is_bahia_blanca:
+                bna_extra_list = analysis.get("bna_extra", [])
+                for bna_extra in bna_extra_list:
+                    # Verificar si el BNA corresponde a este TC (por cotización)
+                    bna_tc = _get_bna_tc(fp_fn(bna_extra))
+                    if bna_tc and abs(bna_tc - tc) < 1:
+                        print(f"  [{step}] BNA extra TC {tc:g}")
+                        add_pdf(writer, fp_fn(bna_extra))
+                        step += 1
 
             for (num, lbl, amt) in tc_groups.get(tc, []):
                 fname = facb_files.get(num)
@@ -630,6 +637,17 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         "vessel":    vessel,
         "client":    client,
     }
+
+
+
+
+
+
+
+
+
+
+
 
 
 
