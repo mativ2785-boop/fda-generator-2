@@ -133,10 +133,11 @@ add_all('84011_VTC PHOENIX - SOF.pdf')
 print("2. SOF ✓")
 
 # ════════════════ GRUPO TC 1366.5 ════════════════════════════════════════════
-add_zip('N_CB0000300016526.pdf')
-print("3. NCB 16526 (TC 1366.5) ✓")
+# REGLA: dentro de cada grupo TC → FACB Agency Fee PRIMERO, luego NCB(s), luego FACBs port expenses
 add_zip('FACB0000300030073.pdf')
-print("4. FACB 30073 Agency Fee (TC 1366.5) ✓")
+print("3. FACB 30073 Agency Fee (TC 1366.5) ✓")
+add_zip('N_CB0000300016526.pdf')
+print("4. NCB 16526 (TC 1366.5) ✓")
 add_zip('FACB0000300030537.pdf')
 print("5. FACB 30537 Port expenses (TC 1366.5) ✓")
 
@@ -241,10 +242,11 @@ writer.add_page(PdfReader(buf_tax2).pages[0])
 print("23. TAX ON CREDIT/DEBIT [TC 1400] USD 303.91 ✓")
 
 # ════════════════ GRUPO TC 1462.74 ═══════════════════════════════════════════
-add_zip('N_CB0000300016525.pdf')
-print("24. NCB 16525 (TC 1462.74) ✓")
+# REGLA: FACB Agency/Port expenses PRIMERO, luego NCB
 add_zip('FACB0000300030544.pdf')
-print("25. FACB 30544 Pilot Launch (TC 1462.74) ✓")
+print("24. FACB 30544 Pilot Launch (TC 1462.74) ✓")
+add_zip('N_CB0000300016525.pdf')
+print("25. NCB 16525 (TC 1462.74) ✓")
 
 add_voucher('PILOT LAUNCH')
 add_all('GLATIL SA (300361)_W313576.pdf')   # USD 4,440 ✓
@@ -275,5 +277,7 @@ print(f"  Original:  {stats['original_mb']} MB")
 print(f"  Final:     {stats['final_mb']} MB")
 print(f"  Reducción: {stats['reduction_pct']}%")
 print(f"\n✅ FDA listo: {OUTPUT}")
+
+
 
 
