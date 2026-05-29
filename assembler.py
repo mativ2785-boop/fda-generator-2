@@ -433,6 +433,11 @@ def normalize_line_amounts_with_tc(analysis, work_dir):
             if key in ("LAUNCH SERVICES FOR CLEARENCE","LAUNCH SERVICES FOR CLEARANCE"):
                 key = "LAUNCH SERVICES FOR CLEARANCE (AT ROADS)"
             if key == "FULL ON HIRE DELIVERY BUNKER A": key = "FULL ON HIRE / BQS SURVEY"
+            # FIX PILOT LAUNCH: la FACB trunca el nombre — normalizar variantes
+            if key.startswith("PILOT LAUNCH TRANSPORTATION"):
+                key = "PILOT LAUNCH TRANSPORTATION RIVER PLATE"
+            if key == "PILOT LAUNCH RIVER PLATE":
+                key = "PILOT LAUNCH TRANSPORTATION RIVER PLATE"
             
             # TOLL DUES → AGP o CARP según TC
             if key == "TOLL DUES":
@@ -648,6 +653,16 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         "vessel":    vessel,
         "client":    client,
     }
+
+
+
+
+
+
+
+
+
+
 
 
 
