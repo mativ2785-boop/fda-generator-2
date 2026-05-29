@@ -13,13 +13,27 @@ from datetime   import date as today_date
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
 
-SESSIONS = {}
+SESSIONS   = {}
+SESSION_TS = {}      # timestamp de creación por session_id
+SESSION_TTL = 3600   # 1 hora de vida máxima
 MONTHS   = ["January","February","March","April","May","June",
             "July","August","September","October","November","December"]
 
 def today_str():
     d = today_date.today()
     return f"{MONTHS[d.month-1]} {d.day}, {d.year}"
+
+
+def _cleanup_expired_sessions():
+    """Elimina sesiones con más de SESSION_TTL segundos de antigüedad."""
+    import time
+    now = time.time()
+    expired = [s for s, ts in list(SESSION_TS.items()) if now - ts > SESSION_TTL]
+    for s in expired:
+        wd = SESSIONS.pop(s, {}).get("work_dir")
+        SESSION_TS.pop(s, None)
+        if wd:
+            shutil.rmtree(wd, ignore_errors=True)
 
 
 HTML = r"""<!DOCTYPE html>
@@ -376,7 +390,8 @@ function render(a) {
           <td><select data-f="${m.filename}" data-p="${pg.page}">${o}</select></td>
         </tr>`;
       }).join("");
-      mb.innerHTML += `<div class="mar-fname">📄 ${m.filename}</div>
+      const safeF = m.filename.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      mb.innerHTML += `<div class="mar-fname">📄 ${safeF}</div>
         <table><tr><th>Pág.</th><th>Detectado como</th><th>Asignar a voucher</th></tr>
         ${rows}</table>`;
     }
@@ -459,6 +474,12 @@ async function gen() {
 </html>"""
 
 
+@app.route("/health")
+def health():
+    """Health check para Render y monitoreo."""
+    return {"status": "ok"}, 200
+
+
 @app.route("/")
 def index():
     return render_template_string(HTML)
@@ -482,7 +503,10 @@ def upload():
 
     analysis = analyze(work_dir)
     sid = str(uuid.uuid4())
-    SESSIONS[sid] = {"work_dir": work_dir, "analysis": analysis}
+    import time
+    _cleanup_expired_sessions()           # purgar sesiones caducadas
+    SESSIONS[sid]   = {"work_dir": work_dir, "analysis": analysis}
+    SESSION_TS[sid] = time.time()
 
     a = dict(analysis)
     a["tc_groups"] = {str(k): v for k, v in analysis["tc_groups"].items()}
@@ -501,6 +525,9 @@ def generate():
     analysis = dict(SESSIONS[sid]["analysis"])
 
     overrides = data.get("overrides", {})
+    # Validar que las claves de overrides corresponden a archivos del análisis
+    known_fnames = {m["filename"] for m in analysis.get("maritime", [])}
+    overrides = {k: v for k, v in overrides.items() if k in known_fnames}
     if overrides:
         new_maritime = []
         for m in analysis["maritime"]:
@@ -531,12 +558,44 @@ def generate():
         result["filename"] = f"FDA_{vessel_slug}.pdf"
         return jsonify(result)
     except Exception as e:
-        return jsonify({"error": traceback.format_exc()}), 500
+        # No exponer traceback completo al cliente en producción
+        import logging
+        logging.exception("Error en build_fda")
+        return jsonify({"error": "Error interno al generar el FDA. Revisá los archivos del ZIP."}), 500
+    finally:
+        # Limpiar sesión y /tmp siempre — tanto en éxito como en error
+        SESSIONS.pop(sid, None)
+        try:
+            shutil.rmtree(work_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
