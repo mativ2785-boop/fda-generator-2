@@ -140,7 +140,9 @@ class BahiaBlancaPort:
         return next((f["tc"] for f in a["facbs"] if f.get("type") == "agency"), keys[0] if keys else 1373.5)
 
     def _tc_port(self, a):
-        return next((f["tc"] for f in a["facbs"] if f.get("type") == "port_expenses"), self._tc_agency(a))
+        # FIX B2: usar el TC MÍNIMO de port_expenses (cronológicamente el primero).
+        tcs = [f["tc"] for f in a["facbs"] if f.get("type") == "port_expenses" and f.get("tc")]
+        return min(tcs) if tcs else self._tc_agency(a)
 
     def _mar_inv(self, analysis, exclude_mooring_img=True):
         mar_pages = {}
@@ -302,7 +304,9 @@ class NecocheaPort:
         return next((f["tc"] for f in a["facbs"] if f.get("type") == "agency"), keys[0] if keys else 1359.0)
 
     def _tc_port(self, a):
-        return next((f["tc"] for f in a["facbs"] if f.get("type") == "port_expenses"), self._tc_agency(a))
+        # FIX B2: usar el TC MÍNIMO de port_expenses (cronológicamente el primero).
+        tcs = [f["tc"] for f in a["facbs"] if f.get("type") == "port_expenses" and f.get("tc")]
+        return min(tcs) if tcs else self._tc_agency(a)
 
     def _mar_inv(self, analysis, exclude_mooring_img=True):
         mar_pages = {}
@@ -429,11 +433,13 @@ class SanLorenzoPort:
         # Las facturas de recorrido/servicios (sin maniobra) van bajo River Parana Pilotage.
         # Las facturas con maniobra van bajo AMBOS (Parana Pilotage Y Anchorage Maneuver).
         cp_all = analysis.get("coprac", [])
-        # Base: SOLO facturas sin maniobra (las de Fondeo van SOLO bajo Anchorage)
-        cp_base  = [(r["filename"], [0]) for r in cp_all if not r.get("has_maniobra")]
-        cp_delay = [(r["filename"], [0]) for r in cp_all if r.get("has_demora")]
-        # Anchorage: solo las que tienen maniobra
-        cp_manio     = [(r["filename"], [0]) for r in cp_all if r.get("has_maniobra")]
+        # FIX B3: cp_base incluye TODAS las facturas (con y sin maniobra).
+        # El manual dice: facturas con maniobra van bajo Parana Pilotage Y Anchorage Maneuver.
+        # Facturas sin maniobra van SOLO bajo Parana Pilotage.
+        cp_base  = [(r["filename"], None) for r in cp_all]
+        cp_delay = [(r["filename"], None) for r in cp_all if r.get("has_demora")]
+        # Anchorage: SOLO las que tienen línea de maniobra con monto
+        cp_manio     = [(r["filename"], None) for r in cp_all if r.get("has_maniobra")]
         # El monto del voucher SIEMPRE es el de la FACB (línea de la factura ISA)
         facb_cp_manio = amt("RIVER PARANA PILOTAGE ANCHORAGE MANEUVER")
         cp_manio_amt = facb_cp_manio
@@ -714,7 +720,10 @@ class SanLorenzoPort:
         return next((f["tc"] for f in a["facbs"] if f.get("type") == "agency"), keys[0] if keys else 1407.0)
 
     def _tc_port(self, a):
-        return next((f["tc"] for f in a["facbs"] if f.get("type") == "port_expenses"), self._tc_agency(a))
+        # FIX B2: usar el TC MÍNIMO de port_expenses (cronológicamente el primero).
+        # No usar next() porque el orden de facbs puede estar alterado por sort numérico.
+        tcs = [f["tc"] for f in a["facbs"] if f.get("type") == "port_expenses" and f.get("tc")]
+        return min(tcs) if tcs else self._tc_agency(a)
 
     def _tc_for_concept(self, a, concept, work_dir):
         """Devuelve el TC de la FACB de port_expenses que contiene el concepto dado."""
@@ -789,6 +798,16 @@ def detect_port(analysis):
             analysis.get("rosario_pilots") or analysis.get("terminal_portuario")):
         return SanLorenzoPort()
     return BahiaBlancaPort()
+
+
+
+
+
+
+
+
+
+
 
 
 
