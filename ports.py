@@ -337,7 +337,9 @@ class SanLorenzoPort:
         "CUSTOM HOUSE EXPENSES",
         "CUSTOM HOUSE PERMANENCE",
         "CUSTOM HOUSE EXPENSE (CARGO)",
+        "COAST GUARD EXPENSES",
         "MIGRATION EXPENSES",
+        "MIGRATION EXPENSES - OUTWARD",
         "SANITARY DUES AND FREE PRATIQUE",
         "GARBAGE COMPULSORY INSPECTION",
         "MANDATORY HOLDS INSPECTION",
@@ -404,18 +406,16 @@ class SanLorenzoPort:
                 "tc":tc_p,"invoices":enapro
             }
 
-        # River Plate Pilotage
+        # River Plate Pilotage — solo la primera página (factura), excluir voucher interno
         rp_all   = analysis.get("practicaje_rp",[])
-        rp_base  = [(r["filename"],None) for r in rp_all]
-        # River Plate Pilotage
-        rp_all   = analysis.get("practicaje_rp",[])
-        rp_base  = [(r["filename"],None) for r in rp_all]
-        rp_delay = [(r["filename"],None) for r in rp_all if r.get("has_demora")]
+        rp_base  = [(r["filename"], [0]) for r in rp_all]  # solo p1 = factura
+        rp_delay = [(r["filename"], [0]) for r in rp_all if r.get("has_demora")]
         # Anchorage: SOLO las facturas que tienen línea MANIOBRA con monto.
-        # NUNCA fallback al set completo — si no hay maniobra real, no hay Anchorage.
-        rp_manio     = [(r["filename"],None) for r in rp_all if r.get("has_maniobra") and r.get("maniobra_amount",0) > 0]
+        rp_manio     = [(r["filename"], [0]) for r in rp_all
+                        if r.get("has_maniobra") and r.get("maniobra_amount",0) > 0]
         rp_manio_amt = amt("RIVER PLATE PILOTAGE ANCHORAGE MANEUVER") or \
-                       sum(r.get("maniobra_amount",0) for r in rp_all if r.get("has_maniobra") and r.get("maniobra_amount",0) > 0)
+                       sum(r.get("maniobra_amount",0) for r in rp_all
+                           if r.get("has_maniobra") and r.get("maniobra_amount",0) > 0)
 
         if rp_base and amt("RIVER PLATE PILOTAGE")>0:
             entries["RIVER PLATE PILOTAGE"] = {
@@ -536,12 +536,29 @@ class SanLorenzoPort:
             if inv and amt(v)>0:
                 entries[v] = {"concept":v,"amount":amt(v),"tc":tc_p,"invoices":inv}
 
-        # Migration
+        # Migration — inward y outward son vouchers distintos si hay montos distintos
         mig_inv = mar.get("MIGRATION EXPENSES",[])
         if mig_inv and amt("MIGRATION EXPENSES")>0:
             entries["MIGRATION EXPENSES"] = {
                 "concept":"MIGRATION EXPENSES","amount":amt("MIGRATION EXPENSES"),
                 "tc":tc_p,"invoices":mig_inv
+            }
+        # Coast Guard Expenses (concepto presente en algunas FACBs de SL)
+        if amt("COAST GUARD EXPENSES") > 0:
+            # Las páginas de coast guard están dentro de Maritime bajo Custom House
+            coast_inv = mar.get("COAST GUARD EXPENSES", []) or mar.get("CUSTOM HOUSE PERMANENCE", [])
+            entries["COAST GUARD EXPENSES"] = {
+                "concept": "COAST GUARD EXPENSES",
+                "amount":  amt("COAST GUARD EXPENSES"),
+                "tc": tc_p, "invoices": coast_inv
+            }
+        # Migration Outward (variante de algunos FDAs)
+        if amt("MIGRATION EXPENSES - OUTWARD") > 0:
+            mig_out_inv = mar.get("MIGRATION EXPENSES",[])
+            entries["MIGRATION EXPENSES - OUTWARD"] = {
+                "concept": "MIGRATION EXPENSES - OUTWARD",
+                "amount":  amt("MIGRATION EXPENSES - OUTWARD"),
+                "tc": tc_p, "invoices": mig_out_inv
             }
 
         # Sanitary
@@ -676,7 +693,17 @@ class SanLorenzoPort:
                                     "tc":tc_p,"invoices":[]}
 
         base = [entries[v] for v in self.VOUCHER_ORDER if v in entries]
-        return _build_with_extra_taxes(base, entries)
+        base = _build_with_extra_taxes(base, entries)
+
+        # Reordenar: TCs descendentes primero (el más alto va antes que el base).
+        # Dentro de cada TC se respeta el VOUCHER_ORDER.
+        if base:
+            all_tcs = sorted(set(e["tc"] for e in base), reverse=True)
+            ordered = []
+            for tc in all_tcs:
+                ordered.extend(e for e in base if e["tc"] == tc)
+            return ordered
+        return base
 
     # ── helpers ──────────────────────────────────────────────────────────
 
