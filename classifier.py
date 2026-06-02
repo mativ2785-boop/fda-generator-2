@@ -554,6 +554,7 @@ MARITIME_PAGE_RULES = [
     ("senasa",           ["BOLETA DE PAGO", "Barreras Sanitarias"]),
     ("senasa",           ["Barreras Sanitarias", "BOLETA"]),
     ("senasa",           ["Barreras Sanitarias", "ARANCEL"]),
+    ("senasa",           ["Barreras Sanitarias", "Regional"]),  # variante con BOLETA ARANCEL
 
     # ── Mandatory Holds ───────────────────────────────────────────────────
     ("compulsory_insp",  ["COMPULSORY INSPECTION BY PRIVATE SURVEYORS"]),
@@ -618,6 +619,7 @@ PAGE_TO_VOUCHER = {
     "pest_pag":              "PEST CONTROL",
     "compulsory_insp":       "MANDATORY HOLDS INSPECTION",
     "compulsory_reinsp":     "MANDATORY HOLDS RE-INSPECTION",
+    "coast_guard":           "COAST GUARD EXPENSES",
     "skip":                  None,
     "skip_dup":              None,
     "mooring_img":           "MOORING & UNMOORING SERVICES",
@@ -704,35 +706,42 @@ def classify_maritime_pages(pdf_path):
         if is_image_page(pdf_path, i):
             cat = _classify_image_page_deterministic(pdf_path, i)
 
-        # Páginas "unknown" con texto: intentar clasificar por contexto
+        # Páginas "unknown" con texto: clasificar por contenido
         if cat == "unknown" and text.strip():
-            text_up_local = text.upper()
-            # Facturas de inspectores externos embebidas en Maritime
-            if any(k in text_up_local for k in (
-                "BUREAU VERITAS", "DUHAU", "SGS ARGENTINA", "COTECNA",
-                "CONTROL UNION", "ECOTEC", "COMETEC", "ENVIRO CONTROLAR"
-            )):
+            tu = text.upper()
+            if any(k in tu for k in ("BUREAU VERITAS", "DUHAU", "SGS ARGENTINA",
+                                      "COTECNA", "CONTROL UNION", "ECOTEC",
+                                      "COMETEC", "ENVIRO CONTROLAR")):
                 cat = "compulsory_insp"
-            # Páginas de amarre que quedaron sin clasificar
-            elif any(k in text_up_local for k in ("MOORING", "UNMOORING", "AMARRE")):
+            elif any(k in tu for k in ("MOORING", "UNMOORING", "AMARRE")):
                 cat = "amarradores_pag"
-            # Páginas de coast guard / customs permanence
-            elif any(k in text_up_local for k in ("COAST GUARD", "PERMANENCIA ADUANERA")):
+            elif any(k in tu for k in ("PREFECTURA NAVAL", "SEÑOR JEFE",
+                                        "SR. JEFE", "JEFE DE LA PREF",
+                                        "COAST GUARD")):
+                cat = "coast_guard"
+            elif "PERMANENCIA ADUANERA" in tu:
                 cat = "se_permanencia"
 
-        # Deduplicar AFIP LMAN
+        # Excluir VOUCHER INTERNO de compulsory (recibo ISA, no factura inspector)
+        if cat == "compulsory_insp" and "VOUCHER" in text.upper() and \
+                ("MV:" in text.upper() or "M/V" in text.upper()):
+            cat = "skip"
+
+        # Deduplicar AFIP LMAN — solo por referencia de texto, nunca por ser imagen
         if cat == "afip_lman":
-            # Si la página es pura imagen (sin texto), saltearla para evitar
-            # duplicar una versión imagen con la versión texto de la misma página
-            if not text.strip() and is_image_page(pdf_path, i):
+            m = re.search(r"LMAN(\w+)", text)
+            ref = m.group(1) if m else f"p{i}"
+            if ref in seen_lman:
                 cat = "skip_dup"
             else:
-                m = re.search(r"LMAN(\w+)", text)
-                ref = m.group(1) if m else f"p{i}"
-                if ref in seen_lman:
-                    cat = "skip_dup"
-                else:
-                    seen_lman.add(ref)
+                seen_lman.add(ref)
+
+        # skip_dup con SENASA → rescatar como senasa
+        if cat == "skip_dup" and text.strip():
+            tu2 = text.upper()
+            if any(k in tu2 for k in ("BARRERAS SANITARIAS", "COORDINACION GENERAL",
+                                       "COORDINACIÓN GENERAL")):
+                cat = "senasa"
 
         voucher = PAGE_TO_VOUCHER.get(cat, None)
         result.append({"page": i, "category": cat, "voucher": voucher})
@@ -965,28 +974,60 @@ def analyze(work_dir):
                 _text = "".join(pg.get_text() for pg in _doc).upper()
             except Exception:
                 _text = ""
-            fname_up = fname.upper()
-            # Clearance: Gente de Rio W*1 es siempre clearance (embarking/disembarking inspectors)
-            # Gente de Rio W*4 es mooring (segundo servicio del día)
-            # Plate Amarres con MOORING es Mooring & Unmooring
-            is_gente_rio = "GENTE DE RIO" in fname_up or "GENTE DE RIO" in _text
+            # REGLA: la distinción es por CONTENIDO de la factura, no por proveedor.
+            # Gente de Rio, Plate Amarres, Amarre Coral, Plus Ultra, etc.
+            # pueden tener facturas de los dos tipos en el mismo FDA.
+            #
+            # LAUNCH SERVICES FOR CLEARANCE (AT ROADS):
+            #   → factura dice EMBARKING INSPECTORS AND AGENCY
+            #                o DISEMBARKING INSPECTORS AND AGENCY
+            #                o BOAT SERVICES EMBARKING / DISEMBARKING
+            #
+            # MOORING & UNMOORING SERVICES:
+            #   → factura dice MOORING, UNMOORING, AMARRE, DESAMARRE
             is_clearance = (
-                ("DISEMBARK" in _text and "INSPECTOR" in _text) or
-                ("EMBARK"    in _text and "INSPECTOR" in _text) or
-                ("EMBARKING INSPECTORS" in _text) or
-                ("DISEMBARKING INSPECTORS" in _text)
+                ("EMBARKING INSPECTORS AND AGENCY"    in _text) or
+                ("DISEMBARKING INSPECTORS AND AGENCY" in _text) or
+                ("EMBARKING INSPECTORS"               in _text) or
+                ("DISEMBARKING INSPECTORS"            in _text) or
+                ("BOAT SERVICES EMBARKING"            in _text) or
+                ("BOAT SERVICES DISEMBARKING"         in _text)
             )
             is_mooring = (
-                ("MOORING" in _text and "UNMOORING" in _text) or
-                ("MOORING AND UNMOORING" in _text) or
-                ("PLATE AMARRES" in fname_up and "MOORING" in _text)
+                "MOORING"   in _text or
+                "UNMOORING" in _text or
+                "AMARRE"    in _text or
+                "DESAMARRE" in _text
             )
-            # Gente de Rio sin clasificación clara → mooring (segundo servicio)
-            if is_gente_rio and not is_clearance and not is_mooring:
-                is_mooring = True
-            # Si es tanto clearance como mooring, es mooring (Plate Amarres)
-            if is_mooring and is_clearance and not is_gente_rio:
-                is_clearance = False
+            # Si una factura tiene ambas descripciones (poco común pero posible),
+            # la descripción de clearance tiene prioridad sobre mooring
+            if is_clearance and is_mooring:
+                # Verificar cuál es la descripción principal (primer concepto)
+                # Si "EMBARKING" aparece antes que "MOORING" → clearance
+                pos_clear  = min(
+                    (_text.find(k) for k in
+                     ("EMBARKING INSPECTORS", "DISEMBARKING INSPECTORS")
+                     if k in _text),
+                    default=99999
+                )
+                pos_moor = min(
+                    (_text.find(k) for k in ("MOORING", "AMARRE")
+                     if k in _text),
+                    default=99999
+                )
+                if pos_clear < pos_moor:
+                    is_mooring = False
+                else:
+                    is_clearance = False
+            # Default: si no hay señal clara en el texto (factura es imagen),
+            # clasificar por nombre del proveedor como heurística
+            if not is_clearance and not is_mooring:
+                fname_up = fname.upper()
+                # Gente de Rio históricamente provee clearance
+                if "GENTE DE RIO" in fname_up:
+                    is_clearance = True
+                else:
+                    is_mooring = True
             result["amarre_coral"].append({
                 "filename": fname,
                 "is_clearance": is_clearance,
@@ -1070,53 +1111,3 @@ def analyze(work_dir):
     result["puerto_mariel"].sort()
 
     return result
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
