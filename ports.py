@@ -407,11 +407,15 @@ class SanLorenzoPort:
         # River Plate Pilotage
         rp_all   = analysis.get("practicaje_rp",[])
         rp_base  = [(r["filename"],None) for r in rp_all]
+        # River Plate Pilotage
+        rp_all   = analysis.get("practicaje_rp",[])
+        rp_base  = [(r["filename"],None) for r in rp_all]
         rp_delay = [(r["filename"],None) for r in rp_all if r.get("has_demora")]
-        rp_manio = [(r["filename"],None) for r in rp_all if r.get("has_maniobra")]
+        # Anchorage: SOLO las facturas que tienen línea MANIOBRA con monto.
+        # NUNCA fallback al set completo — si no hay maniobra real, no hay Anchorage.
+        rp_manio     = [(r["filename"],None) for r in rp_all if r.get("has_maniobra") and r.get("maniobra_amount",0) > 0]
         rp_manio_amt = amt("RIVER PLATE PILOTAGE ANCHORAGE MANEUVER") or \
-                       sum(r.get("maniobra_amount",0) for r in rp_all if r.get("has_maniobra"))
-        if not rp_manio: rp_manio = rp_base
+                       sum(r.get("maniobra_amount",0) for r in rp_all if r.get("has_maniobra") and r.get("maniobra_amount",0) > 0)
 
         if rp_base and amt("RIVER PLATE PILOTAGE")>0:
             entries["RIVER PLATE PILOTAGE"] = {
@@ -424,7 +428,8 @@ class SanLorenzoPort:
                 "amount":amt("RIVER PLATE PILOTAGE (DELAY)"),
                 "tc":tc_p,"invoices":rp_delay
             }
-        if rp_manio and rp_manio_amt>0:
+        # Solo crear Anchorage si hay facturas con maniobra real Y monto > 0
+        if rp_manio and rp_manio_amt > 0:
             entries["RIVER PLATE PILOTAGE ANCHORAGE MANEUVER"] = {
                 "concept":"RIVER PLATE PILOTAGE ANCHORAGE MANEUVER",
                 "amount":rp_manio_amt,"tc":tc_p,"invoices":rp_manio
@@ -434,10 +439,11 @@ class SanLorenzoPort:
         cp_all   = analysis.get("coprac",[])
         cp_base  = [(r["filename"],None) for r in cp_all]
         cp_delay = [(r["filename"],None) for r in cp_all if r.get("has_demora")]
-        cp_manio = [(r["filename"],None) for r in cp_all if r.get("has_maniobra")]
+        # Anchorage: SOLO las facturas con maniobra real (monto > 0).
+        # NUNCA fallback al set completo.
+        cp_manio     = [(r["filename"],None) for r in cp_all if r.get("has_maniobra") and r.get("maniobra_amount",0) > 0]
         cp_manio_amt = amt("RIVER PARANA PILOTAGE ANCHORAGE MANEUVER") or \
-                       sum(r.get("maniobra_amount",0) for r in cp_all if r.get("has_maniobra"))
-        if not cp_manio: cp_manio = cp_base
+                       sum(r.get("maniobra_amount",0) for r in cp_all if r.get("has_maniobra") and r.get("maniobra_amount",0) > 0)
 
         if cp_base and amt("RIVER PARANA PILOTAGE")>0:
             entries["RIVER PARANA PILOTAGE"] = {
@@ -450,7 +456,8 @@ class SanLorenzoPort:
                 "amount":amt("RIVER PARANA PILOTAGE (DELAY)"),
                 "tc":tc_p,"invoices":cp_delay
             }
-        if cp_manio and cp_manio_amt>0:
+        # Solo crear Anchorage si hay facturas con maniobra real Y monto > 0
+        if cp_manio and cp_manio_amt > 0:
             entries["RIVER PARANA PILOTAGE ANCHORAGE MANEUVER"] = {
                 "concept":"RIVER PARANA PILOTAGE ANCHORAGE MANEUVER",
                 "amount":cp_manio_amt,"tc":tc_p,"invoices":cp_manio
@@ -739,6 +746,7 @@ def detect_port(analysis):
             analysis.get("rosario_pilots") or analysis.get("terminal_portuario")):
         return SanLorenzoPort()
     return BahiaBlancaPort()
+
 
 
 
