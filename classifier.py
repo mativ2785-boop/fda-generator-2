@@ -398,11 +398,16 @@ def detect_pilotaje_flags(pdf_path):
             continue
 
         # Formato A: monto USD en la misma línea — Ripla
-        # "1 MANIOBRAS EN ZC USD 2,520.00"
-        m = re.search(r"USD\s*([\d,\.]+)", line)
+        # "1 MANIOBRAS EN ZC USD 2,520.00"  o  "1 MANIOBRAS EN ZC USD 2.520,00"
+        m = re.search(r"USD\s*([\d\.,]+)", line)
         if m:
+            raw = m.group(1)
             try:
-                val = float(m.group(1).replace(",", ""))
+                # Formato europeo: "2.520,00" → 2520.00
+                if "," in raw and raw.index(",") > raw.index(".") if "." in raw else False:
+                    val = float(raw.replace(".", "").replace(",", "."))
+                else:
+                    val = float(raw.replace(",", ""))
                 if val > 100:
                     has_maniobra = True
                     maniobra_amount += val
@@ -421,7 +426,7 @@ def detect_pilotaje_flags(pdf_path):
             if qty_match and float(clean) < 100:
                 continue
 
-            # Formato "2.520,00" (punto=miles, coma=decimal) — COPRAC en ARS
+            # Formato "2.520,00" (punto=miles, coma=decimal) — COPRAC en ARS / Ripla
             m3 = re.match(r"^([\d]+\.[\d]{3},[\d]{2})$", clean)
             if m3:
                 try:
@@ -433,7 +438,19 @@ def detect_pilotaje_flags(pdf_path):
                     pass
                 break
 
-            # Formato "2,520.00" USD — Ripla
+            # Formato "USD 2.520,00" (prefijo USD + punto miles + coma decimal) — Ripla LASKARO
+            m_usd_eu = re.match(r"^USD\s+([\d]+\.[\d]{3},[\d]{2})$", clean)
+            if m_usd_eu:
+                try:
+                    val = float(m_usd_eu.group(1).replace(".", "").replace(",", "."))
+                    if val > 100:
+                        has_maniobra = True
+                        maniobra_amount += val
+                except ValueError:
+                    pass
+                break
+
+            # Formato "2,520.00" USD — Ripla estándar
             m4 = re.match(r"^USD\s*([\d,]+\.\d{2})$", clean)
             if m4:
                 try:
@@ -536,15 +553,17 @@ MARITIME_PAGE_RULES = [
     ("migraciones_liq",  ["Migraciones", "Liquidaci"]),
     ("migraciones_sol",  ["Servicios Marítimos y Fluviales", "Solicitud de Servicio"]),
 
-    # ── Orden de transporte ───────────────────────────────────────────────
-    # SENASA → Garbage
-    ("orden_transporte_senasa", ["ORDEN DE TRANSPORTE", "SE.NA.SA"]),
-    ("orden_transporte_senasa", ["ORDEN DE TRANSPORTE", "SENASA OFFICE"]),
-    # Libre Plática (Sanidad) → Sanitary — debe ir ANTES que el genérico de migración
-    ("orden_transporte_sanidad", ["ORDEN DE TRANSPORTE", "LIBRE PLATIC"]),
-    ("orden_transporte_sanidad", ["ORDEN DE TRANSPORTE", "FREE PRATIC"]),
-    ("orden_transporte_sanidad", ["ORDEN DE TRANSPORTE", "PRATIQUE"]),
-    # Migración → genérico
+    # ── Orden de transporte — clasificar por DETAIL OF TRIP al final ─────
+    # GARBAGE/SENASA: el trip dice "SE.NA.SA OFFICE"
+    ("orden_transporte_senasa",  ["ORDEN DE TRANSPORTE", "SE.NA.SA"]),
+    ("orden_transporte_senasa",  ["ORDEN DE TRANSPORTE", "SENASA OFFICE"]),
+    ("orden_transporte_senasa",  ["ORDEN DE TRANSPORTE", "SE.NA.SA OFFICE"]),
+    # SANITARY: exclusivamente para Free Pratique con Ministerio de Salud
+    ("orden_transporte_sanidad", ["ORDEN DE TRANSPORTE", "FREE PRATIQUE", "SANITARY"]),
+    ("orden_transporte_sanidad", ["ORDEN DE TRANSPORTE", "LIBRE PLATICA", "MINISTERIO DE SALUD"]),
+    # MIGRATION: el trip dice "MIGRATION OFFICE" (puede mencionar Libre Plática entre otros servicios)
+    ("orden_transporte",         ["ORDEN DE TRANSPORTE", "MIGRATION OFFICE"]),
+    # Genérico → MIGRATION (catch-all)
     ("orden_transporte",         ["ORDEN DE TRANSPORTE"]),
 
     # ── Sanitary / Free Pratique ─────────────────────────────────────────
@@ -1010,19 +1029,27 @@ def analyze(work_dir):
             #
             # MOORING & UNMOORING SERVICES:
             #   → factura dice MOORING, UNMOORING, AMARRE, DESAMARRE
+            #   → o "Boat service/people for mooring" (Amarre Coral formato inglés)
             is_clearance = (
                 ("EMBARKING INSPECTORS AND AGENCY"    in _text) or
                 ("DISEMBARKING INSPECTORS AND AGENCY" in _text) or
                 ("EMBARKING INSPECTORS"               in _text) or
                 ("DISEMBARKING INSPECTORS"            in _text) or
                 ("BOAT SERVICES EMBARKING"            in _text) or
-                ("BOAT SERVICES DISEMBARKING"         in _text)
+                ("BOAT SERVICES DISEMBARKING"         in _text) or
+                ("BOAT SERVICE EMBARKING"             in _text) or
+                ("BOAT SERVICE DISEMBARKING"          in _text) or
+                ("PEOPLE FOR EMBARKING"               in _text) or
+                ("PEOPLE FOR DISEMBARKING"            in _text)
             )
             is_mooring = (
                 "MOORING"   in _text or
                 "UNMOORING" in _text or
                 "AMARRE"    in _text or
-                "DESAMARRE" in _text
+                "DESAMARRE" in _text or
+                "BOAT SERVICE/PEOPLE FOR MOORING" in _text or
+                "BOAT SERVICES FOR MOORING"       in _text or
+                "PEOPLE FOR MOORING"              in _text
             )
             # Si una factura tiene ambas descripciones (poco común pero posible),
             # la descripción de clearance tiene prioridad sobre mooring
