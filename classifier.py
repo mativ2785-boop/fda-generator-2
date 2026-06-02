@@ -133,7 +133,10 @@ DOC_TYPES_CONTENT = [
     ("facb_isa", ["A00003", "BAHIA BLANCA PORT"]),
     ("facb_isa", ["A00003", "NECOCHEA PORT"]),
 
-    # ── GLATIL — antes de practicaje_rp para evitar falsa clasificación ───
+    # ── ENTRANCE AND LIGHT DUES — solo ENAPRO ────────────────────────────
+    ("enapro_standalone", ["Ente Administrador Puerto Rosario", "enapro.com.ar"]),
+    ("enapro_standalone", ["ENAPRO", "ENTRADA"]),
+    ("enapro_standalone", ["enapro.com.ar"]),
     # El Excel lista Glatil bajo RIVER PLATE PILOTAGE pero emite factura
     # propia de transporte (Pilot Launch). Monto válido: solo USD 4,440.
     ("glatil", ["GLATIL SA"]),
@@ -379,7 +382,7 @@ def detect_pilotaje_flags(pdf_path):
     text_up = text.upper()
     has_demora = "DEMORA" in text_up or "PRACTICO A LA ORDEN" in text_up
 
-    has_maniobra   = False
+    has_maniobra    = False
     maniobra_amount = 0.0
     lines = text.split("\n")
 
@@ -388,22 +391,31 @@ def detect_pilotaje_flags(pdf_path):
         if "MANIOBRA" not in lu:
             continue
 
-        # Formato A: "1 MANIOBRAS EN ZC USD 2,520.00" (todo en una línea)
+        # Formato A: monto USD en la misma línea — Ripla
+        # "1 MANIOBRAS EN ZC USD 2,520.00"
         m = re.search(r"USD\s*([\d,\.]+)", line)
         if m:
             try:
-                has_maniobra = True
-                maniobra_amount += float(m.group(1).replace(",", ""))
-                continue
+                val = float(m.group(1).replace(",", ""))
+                if val > 100:
+                    has_maniobra = True
+                    maniobra_amount += val
+                    continue
             except ValueError:
                 pass
 
-        # Formato B: monto en la línea siguiente
-        for j in range(i + 1, min(i + 4, len(lines))):
+        # Buscar monto en líneas siguientes (ventana de 5 líneas)
+        for j in range(i + 1, min(i + 6, len(lines))):
             clean = lines[j].replace("|", "").strip()
             if not clean:
                 continue
-            # "2.520,00" (punto=miles, coma=decimal) — COPRAC
+
+            # Saltear líneas de cantidad (1.00, 2.00, etc.) — son cantidades no montos
+            qty_match = re.match(r"^\d+\.00$", clean)
+            if qty_match and float(clean) < 100:
+                continue
+
+            # Formato "2.520,00" (punto=miles, coma=decimal) — COPRAC en ARS
             m3 = re.match(r"^([\d]+\.[\d]{3},[\d]{2})$", clean)
             if m3:
                 try:
@@ -414,7 +426,8 @@ def detect_pilotaje_flags(pdf_path):
                 except ValueError:
                     pass
                 break
-            # "2,520.00" (coma=miles, punto=decimal) — Ripla
+
+            # Formato "2,520.00" USD — Ripla
             m4 = re.match(r"^USD\s*([\d,]+\.\d{2})$", clean)
             if m4:
                 try:
@@ -426,17 +439,42 @@ def detect_pilotaje_flags(pdf_path):
                     pass
                 break
 
+            # Formato Multipar — precio unitario en USD sin prefijo
+            # Estructura: MANIOBRA... | 2.00 (qty) | 966.00 (unit_price) | 1,932.00 (total)
+            # Buscamos el primer número > 100 después de la línea MANIOBRA
+            m5 = re.match(r"^([\d,]+\.\d{2})$", clean)
+            if m5:
+                try:
+                    val = float(m5.group(1).replace(",", ""))
+                    if 200 < val < 50000:
+                        has_maniobra = True
+                        maniobra_amount += val
+                        break
+                    # Si val <= 200 podría ser otro número pequeño, seguir buscando
+                except ValueError:
+                    pass
+                continue
+
+            # Si encontramos otra línea de concepto textual, parar búsqueda
+            if re.match(r"^[A-Z][A-Z ]{3,}$", clean):
+                break
+
+    # Multipar: la detección de MANIOBRA por texto es suficiente incluso si
+    # no se extrajo el monto exacto (las facturas son en ARS, el monto USD
+    # se calcula por la FACB ISA). En ese caso, maniobra_amount queda en 0
+    # y ports.py usará el valor de la FACB.
     return has_demora, has_maniobra, maniobra_amount
 
 
 def classify_doc(pdf_path):
-    """Clasifica el PDF. Primero por contenido, luego por nombre."""
+    """Clasifica el PDF. Primero por contenido (case-insensitive), luego por nombre."""
     fname = os.path.basename(pdf_path).upper()
     text  = read_text(pdf_path, max_pages=3)
+    text_up = text.upper()
 
     if text.strip():
         for (dtype, keywords) in DOC_TYPES_CONTENT:
-            if all(kw in text for kw in keywords):
+            if all(kw.upper() in text_up for kw in keywords):
                 return dtype
 
     for (dtype, keywords) in DOC_TYPES_NAME:
@@ -933,6 +971,7 @@ def analyze(work_dir):
     result["puerto_mariel"].sort()
 
     return result
+
 
 
 
