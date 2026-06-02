@@ -113,8 +113,10 @@ DOC_TYPES_CONTENT = [
     ("sof",      ["Exceeding expectations", "VESSEL"]),
 
     # Maritime — carátulas y disbursement siempre skip
-    ("maritime", ["FACT CRED ELECT MiPyME"]),
-    ("maritime", ["FACT CRED ELECT"]),
+    # IMPORTANTE: Plate Amarres tiene 'FACT CRED ELECT MiPyME' pero NO es Maritime
+    # → verificar que el nombre del proveedor no sea de amarre
+    ("maritime", ["FACT CRED ELECT MiPyME", "MARITIME SHIPPING"]),
+    ("maritime", ["FACT CRED ELECT", "MARITIME SHIPPING"]),
     ("maritime", ["Maritime Shipping Agency", "Disbursement"]),
     ("maritime", ["MARITIME SHIPPING AGENCY"]),
 
@@ -201,6 +203,9 @@ DOC_TYPES_CONTENT = [
     ("rosario_pilots", ["rosariopilots.com"]),
     ("rosario_pilots", ["30-64794073-7"]),          # CUIT Rosario Pilots
     ("rosario_pilots", ["COOP DE TRABAJO PRACTICOS DEL PARANA LTDA"]),
+    ("rosario_pilots", ["COOPERATIVA PRACTICOS DEL PARANA LTDA"]),  # variante real
+    ("rosario_pilots", ["COOPERATIVA PRACTICOS DEL PARANA"]),
+    ("rosario_pilots", ["30-71704735-0"]),           # CUIT COOP PRACTICOS DEL PARANA
     ("rosario_pilots", ["COOP TRAB PRAC D PTO LA PLATA"]),
     ("rosario_pilots", ["CORPI COOP TRAB PRACT P PARANA LTDA"]),
     ("rosario_pilots", ["PRACTICAJE DEL LITORAL S.R.L."]),
@@ -346,6 +351,7 @@ DOC_TYPES_NAME = [
     ("rosario_pilots",   ["ROSARIO PILOTS", "PRACTICAJE DEL LITORAL",
                           "LITORAL HARBOURS", "UP RIVER PILOTS", "RIO PARANA PILOTS",
                           "COOP DE TRABAJO PRACTICOS DEL PARANA",
+                          "COOPERATIVA PRACTICOS DEL PARANA",
                           "PILOTOS DE PUERTO", "TRANSPILOT"]),
     # Amarradores — solo empresas de amarre reales
     ("amarre_coral",     ["AMARRE CORAL", "GENTE DE RIO", "PLATE AMARRES",
@@ -555,6 +561,9 @@ MARITIME_PAGE_RULES = [
     ("compulsory_insp",  ["LCI REPORT"]),
     ("compulsory_insp",  ["Fides Control", "INSPECTION"]),
     ("compulsory_insp",  ["FACTURA SERV.ELECTR", "INSPEC"]),
+    ("compulsory_insp",  ["BUREAU VERITAS", "INSPECTION"]),
+    ("compulsory_insp",  ["SGS ARGENTINA", "INSPECTION"]),
+    ("compulsory_insp",  ["VOUCHER", "COMPULSORY INSPECTION"]),
     ("compulsory_reinsp",["RE-INSPECTION", "PRIVATE SURVEYORS"]),
     ("compulsory_reinsp",["REINSPECTION", "PRIVATE SURVEYORS"]),
 
@@ -620,36 +629,44 @@ def _classify_image_page_deterministic(pdf_path, idx):
     """
     Clasifica una página imagen usando lookahead del texto de páginas cercanas.
     Determinista: no depende del estado acumulado previo.
-    Orden de prioridad:
-      1. Páginas SIGUIENTES dentro del mismo PDF que tengan señal clara
-      2. Páginas ANTERIORES dentro del mismo PDF
-      3. Fallback: mooring_img
     """
     try:
-        doc = fitz.open(pdf_path)
+        doc   = fitz.open(pdf_path)
         total = doc.page_count
 
-        # Buscar en las 5 páginas siguientes
-        for j in range(idx + 1, min(idx + 6, total)):
+        # Buscar en las 8 páginas siguientes (ventana más amplia)
+        for j in range(idx + 1, min(idx + 9, total)):
             t = doc[j].get_text().upper()
             if any(k in t for k in ("MINISTERIO DE SALUD", "FREE PRACTIQUE",
-                                     "LIBRE PLÁTICA", "SANIDAD", "PRATIQUE")):
+                                     "LIBRE PLÁTICA", "LIBRE PLATICA",
+                                     "SANIDAD", "PRATIQUE", "LIBRE PRATICA")):
                 return "sanidad_cert"
-            if any(k in t for k in ("COMPULSORY INSPECTION", "LCI REPORT", "FIDES CONTROL")):
+            if any(k in t for k in ("COMPULSORY INSPECTION", "LCI REPORT",
+                                     "FIDES CONTROL", "VOUCHER", "BUREAU VERITAS",
+                                     "DUHAU", "SGS ARGENTINA", "CONTROL UNION")):
                 return "compulsory_insp"
             if any(k in t for k in ("SENASA", "BARRERAS SANITARIAS")):
                 return "senasa"
+            if any(k in t for k in ("LMAN", "AFIP", "ADMINISTRACION FEDERAL",
+                                     "HABILITACION", "SOLICITUD DE")):
+                return "afip_lman"
+            if any(k in t for k in ("MIGRACION", "MIGRACIONES",
+                                     "SERVICIO MIGRATORIO", "ORDEN DE TRANSPORTE")):
+                return "migraciones_liq"
             if any(k in t for k in ("MOORING", "UNMOORING", "AMARRE")):
                 return "mooring_img"
 
-        # Buscar en las 3 páginas anteriores
-        for j in range(idx - 1, max(idx - 4, -1), -1):
+        # Buscar en las 5 páginas anteriores
+        for j in range(idx - 1, max(idx - 6, -1), -1):
             t = doc[j].get_text().upper()
             if any(k in t for k in ("MINISTERIO DE SALUD", "FREE PRACTIQUE",
-                                     "LIBRE PLÁTICA", "SANIDAD", "PRATIQUE")):
+                                     "LIBRE PLÁTICA", "LIBRE PLATICA", "PRATIQUE")):
                 return "sanidad_cert"
-            if any(k in t for k in ("COMPULSORY INSPECTION", "LCI REPORT")):
+            if any(k in t for k in ("COMPULSORY INSPECTION", "LCI REPORT",
+                                     "BUREAU VERITAS", "DUHAU", "SGS ARGENTINA")):
                 return "compulsory_insp"
+            if any(k in t for k in ("AFIP", "LMAN", "HABILITACION")):
+                return "afip_lman"
             if any(k in t for k in ("MOORING", "UNMOORING", "AMARRE")):
                 return "mooring_img"
     except Exception:
@@ -683,14 +700,39 @@ def classify_maritime_pages(pdf_path):
                 cat = category
                 break
 
+        # Páginas imagen → clasificar por contexto
+        if is_image_page(pdf_path, i):
+            cat = _classify_image_page_deterministic(pdf_path, i)
+
+        # Páginas "unknown" con texto: intentar clasificar por contexto
+        if cat == "unknown" and text.strip():
+            text_up_local = text.upper()
+            # Facturas de inspectores externos embebidas en Maritime
+            if any(k in text_up_local for k in (
+                "BUREAU VERITAS", "DUHAU", "SGS ARGENTINA", "COTECNA",
+                "CONTROL UNION", "ECOTEC", "COMETEC", "ENVIRO CONTROLAR"
+            )):
+                cat = "compulsory_insp"
+            # Páginas de amarre que quedaron sin clasificar
+            elif any(k in text_up_local for k in ("MOORING", "UNMOORING", "AMARRE")):
+                cat = "amarradores_pag"
+            # Páginas de coast guard / customs permanence
+            elif any(k in text_up_local for k in ("COAST GUARD", "PERMANENCIA ADUANERA")):
+                cat = "se_permanencia"
+
         # Deduplicar AFIP LMAN
         if cat == "afip_lman":
-            m = re.search(r"LMAN(\w+)", text)
-            ref = m.group(1) if m else f"p{i}"
-            if ref in seen_lman:
+            # Si la página es pura imagen (sin texto), saltearla para evitar
+            # duplicar una versión imagen con la versión texto de la misma página
+            if not text.strip() and is_image_page(pdf_path, i):
                 cat = "skip_dup"
             else:
-                seen_lman.add(ref)
+                m = re.search(r"LMAN(\w+)", text)
+                ref = m.group(1) if m else f"p{i}"
+                if ref in seen_lman:
+                    cat = "skip_dup"
+                else:
+                    seen_lman.add(ref)
 
         voucher = PAGE_TO_VOUCHER.get(cat, None)
         result.append({"page": i, "category": cat, "voucher": voucher})
@@ -923,9 +965,28 @@ def analyze(work_dir):
                 _text = "".join(pg.get_text() for pg in _doc).upper()
             except Exception:
                 _text = ""
-            is_clearance = (("DISEMBARK" in _text and "INSPECTOR" in _text) or
-                            ("EMBARK"    in _text and "INSPECTOR" in _text))
-            is_mooring   = "MOORING" in _text and "UNMOORING" in _text
+            fname_up = fname.upper()
+            # Clearance: Gente de Rio W*1 es siempre clearance (embarking/disembarking inspectors)
+            # Gente de Rio W*4 es mooring (segundo servicio del día)
+            # Plate Amarres con MOORING es Mooring & Unmooring
+            is_gente_rio = "GENTE DE RIO" in fname_up or "GENTE DE RIO" in _text
+            is_clearance = (
+                ("DISEMBARK" in _text and "INSPECTOR" in _text) or
+                ("EMBARK"    in _text and "INSPECTOR" in _text) or
+                ("EMBARKING INSPECTORS" in _text) or
+                ("DISEMBARKING INSPECTORS" in _text)
+            )
+            is_mooring = (
+                ("MOORING" in _text and "UNMOORING" in _text) or
+                ("MOORING AND UNMOORING" in _text) or
+                ("PLATE AMARRES" in fname_up and "MOORING" in _text)
+            )
+            # Gente de Rio sin clasificación clara → mooring (segundo servicio)
+            if is_gente_rio and not is_clearance and not is_mooring:
+                is_mooring = True
+            # Si es tanto clearance como mooring, es mooring (Plate Amarres)
+            if is_mooring and is_clearance and not is_gente_rio:
+                is_clearance = False
             result["amarre_coral"].append({
                 "filename": fname,
                 "is_clearance": is_clearance,
@@ -946,13 +1007,51 @@ def analyze(work_dir):
     result["bna"]       = bna_sorted[0]  if bna_sorted       else None
     result["bna_extra"] = bna_sorted[1:] if len(bna_sorted) > 1 else []
 
-    # ── Post-proceso: sailed desde Maritime si SOF vacío ─────────────────
+    # ── Post-proceso: sailed desde múltiples fuentes ─────────────────────
+    # Estrategia: recopilar todas las fechas candidatas y elegir la correcta.
+    # La fecha de salida real del buque está en los disbursement más recientes
+    # (los archivos W con número más alto). Si hay conflicto, la FACB gana.
     if not result.get("sailed"):
-        for m in result.get("maritime", []):
-            _s = _extract_sailed_from_maritime(os.path.join(work_dir, m["filename"]))
+        sailed_candidates = []
+
+        # Fuente 1: Maritime disbursement — recopilar TODAS las fechas
+        for m_entry in result.get("maritime", []):
+            _s = _extract_sailed_from_maritime(os.path.join(work_dir, m_entry["filename"]))
             if _s:
-                result["sailed"] = _s
-                break
+                sailed_candidates.append((_s, m_entry["filename"]))
+
+        # Fuente 2: FACBs ISA — segunda fecha del período (más confiable)
+        for facb in result.get("facbs", []):
+            fname = facb.get("filename", "")
+            if not fname:
+                continue
+            try:
+                doc = fitz.open(os.path.join(work_dir, fname))
+                text = doc[0].get_text()
+                # Formato ISA: "DD-MM-YYYY / DD-MM-YYYY" — segunda fecha = sailed
+                m = re.search(
+                    r'\d{2}-\d{2}-\d{4}\s*/\s*(\d{2})-(\d{2})-(\d{4})', text
+                )
+                if m:
+                    day, mon, yr = m.group(1), m.group(2), m.group(3)
+                    s = f"{MONTH_MAP.get(mon, mon)} {int(day)}, {yr}"
+                    sailed_candidates.append((s, fname))
+            except Exception:
+                continue
+
+        # Elegir la fecha de la FACB ISA si existe (más confiable que Maritime)
+        # Las FACBs tienen nombre FACB* o N_CB*
+        facb_dates  = [(s, f) for s, f in sailed_candidates
+                       if "FACB" in f.upper() or "N_CB" in f.upper()]
+        other_dates = [(s, f) for s, f in sailed_candidates
+                       if "FACB" not in f.upper() and "N_CB" not in f.upper()]
+
+        if facb_dates:
+            result["sailed"] = facb_dates[0][0]
+        elif other_dates:
+            # De Maritime: usar el archivo con número más alto (más reciente)
+            other_dates.sort(key=lambda x: x[1], reverse=True)
+            result["sailed"] = other_dates[0][0]
 
     # ── Ordenar FACBs: agency primero, luego ncb, luego port_expenses ────
     type_order = {"agency": 0, "ncb": 1, "port_expenses": 2}
@@ -971,6 +1070,7 @@ def analyze(work_dir):
     result["puerto_mariel"].sort()
 
     return result
+
 
 
 
