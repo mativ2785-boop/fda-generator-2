@@ -1,47 +1,22 @@
 """
-ports.py — ISA FDA Generator
-Version: 3.0 (Jun 2026) — REESCRITURA COMPLETA
+ports.py — ISA FDA Generator v3.1 (Jun 2026)
 
 PRINCIPIO FUNDAMENTAL:
   Las FACBs ISA son la fuente de verdad del orden y cantidad de vouchers.
   Cada línea de la FACB → 1 voucher ISA + 1 comprobante de proveedor.
-  El orden de los vouchers = el orden de las líneas en las FACBs.
-  Los TCs se ordenan de mayor a menor (descendente).
 
-  AGENCY FEE tiene su FACB pero NO genera voucher en el cuerpo del FDA.
-  TAX ON CREDIT/DEBIT LAW 25.413 genera voucher pero sin comprobante.
+  Orden de las FACBs port_expenses en el FDA:
+    1. FACB con gastos de puerto base (PORT DUES, ENTRANCE, PILOTAJE, etc.)
+    2. FACB con TOLL DUES (CARP) y/o PILOT LAUNCH (Glatil)
+    3. FACB con TOLL DUES (AGP) — siempre la última
 """
 
-import os, re
+import os
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS COMPARTIDOS
 # ══════════════════════════════════════════════════════════════════════════════
-
-def _build_with_extra_taxes(base_result, entries):
-    """Inserta Tax extras (claves _TC{n}) después del último voucher de su TC."""
-    extra_taxes = {
-        entry["tc"]: entry
-        for k, entry in entries.items()
-        if "_TC" in k and k.startswith("TAX ON CREDIT/DEBIT LAW 25.413")
-    }
-    if not extra_taxes:
-        return base_result
-    final, inserted = [], set()
-    for idx, entry in enumerate(base_result):
-        final.append(entry)
-        tc = entry.get("tc", 0)
-        if tc in extra_taxes and tc not in inserted:
-            remaining = [e for e in base_result[idx+1:] if e.get("tc", 0) == tc]
-            if not remaining:
-                final.append(extra_taxes[tc])
-                inserted.add(tc)
-    for tc_e, entry in sorted(extra_taxes.items()):
-        if tc_e not in inserted:
-            final.append(entry)
-    return final
-
 
 def _mar_inv_shared(analysis, exclude_mooring_img=True):
     """Construye dict voucher → [(filename, [page_indices])] desde Maritime."""
@@ -64,12 +39,74 @@ def _mar_inv_shared(analysis, exclude_mooring_img=True):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MAPEADOR DE CONCEPTOS → COMPROBANTES
-# Dado un nombre de concepto de la FACB, retorna los archivos del proveedor.
+# ORDENAMIENTO DE FACBs POR CONTENIDO
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _facb_sort_key(facb_dict, analysis):
+    """
+    Determina el orden de inserción de una FACB en el FDA por su contenido.
+
+    Orden del manual ISA:
+      grupo 0 — gastos de puerto base (PORT DUES, ENTRANCE, PILOTAJE, etc.)
+      grupo 1 — TOLL DUES (CARP) y/o PILOT LAUNCH (Glatil)
+      grupo 2 — TOLL DUES (AGP) — siempre el último
+
+    Dentro de cada grupo: orden por número de FACB ascendente.
+    """
+    from assembler import extract_facb_line_amounts
+
+    fpath = facb_dict.get("_fpath", "")
+    try:
+        la = extract_facb_line_amounts(fpath) if fpath and os.path.exists(fpath) else {}
+    except Exception:
+        la = {}
+
+    keys_up = [k.upper() for k in la.keys()]
+    has_port  = any("PORT DUES"    in k for k in keys_up)
+    has_entr  = any("ENTRANCE"     in k for k in keys_up)
+    has_pilot = any("PILOT LAUNCH" in k for k in keys_up)
+    has_toll  = any("TOLL DUES"    in k for k in keys_up)
+    has_rp    = any("RIVER PLATE PILOTAGE" in k for k in keys_up)
+    has_glatil = bool(analysis.get("glatil"))
+    has_agp    = bool(analysis.get("agp"))
+    has_carp   = bool(analysis.get("carp"))
+    num        = facb_dict.get("number", "")
+
+    # Grupo 0: gastos de puerto base
+    if has_port or has_entr:
+        return (0, num)
+
+    # Grupo 1: Pilot Launch explícito
+    if has_pilot:
+        return (1, num)
+
+    # Grupo 1: RIVER PLATE PILOTAGE en TC alto con Glatil → va junto con Pilot
+    tc_base = min(
+        (f["tc"] for f in analysis.get("facbs", [])
+         if f.get("type") == "port_expenses" and f.get("tc")),
+        default=0
+    )
+    if has_rp and facb_dict.get("tc", 0) > tc_base and has_glatil:
+        return (1, num)
+
+    # Toll Dues: distinguir AGP (último) vs CARP (junto con pilot)
+    if has_toll:
+        if has_agp and not has_carp:
+            return (2, num)   # solo AGP → último
+        if has_carp:
+            return (1, num)   # CARP → segundo
+        # Sin info → segundo por defecto
+        return (1, num)
+
+    # Default → grupo 0
+    return (0, num)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NORMALIZACIÓN CONTEXTUAL DE CONCEPTOS
 # ══════════════════════════════════════════════════════════════════════════════
 
 CONCEPT_ALIASES = {
-    # Variantes de nombres en FACBs → nombre canónico
     "RIVER PARANA PILOTAGE ANCHORAG":      "RIVER PARANA PILOTAGE ANCHORAGE MANEUVER",
     "RIVER PLATE PILOTAGE ANCHORAGE":      "RIVER PLATE PILOTAGE ANCHORAGE MANEUVER",
     "MANDATORY HOLDS INSPECTION AT":       "MANDATORY HOLDS INSPECTION",
@@ -77,38 +114,38 @@ CONCEPT_ALIASES = {
     "LAUNCH SERV FOR INWARD/OUTWAR":       "LAUNCH SERVICES FOR CLEARANCE (AT ROADS)",
     "MOORING & UNMORING SERVICES":         "MOORING & UNMOORING SERVICES",
     "PILOT LAUNCH TRANSPORTATION RI":      "PILOT LAUNCH TRANSPORTATION RIVER PLATE",
-    "TOLL DUES":                           "TOLL DUES",   # se resuelve por TC en normalize
+    "TOLL DUES":                           "TOLL DUES",
 }
 
+
+def normalize_concept(raw):
+    """Normaliza alias simples de la FACB al nombre canónico."""
+    k = raw.upper().strip().replace("PRACTIQUE", "PRATIQUE")
+    return CONCEPT_ALIASES.get(k, k)
 
 
 def _normalize_concept_with_context(raw_concept, tc, tc_base, analysis):
     """
-    Normaliza el concepto de la FACB al nombre canónico del voucher,
-    teniendo en cuenta el TC y el contexto del análisis.
+    Normaliza el concepto de la FACB al nombre del voucher, con contexto.
 
     Reglas contextuales:
     - RIVER PLATE PILOTAGE en TC != base Y hay Glatil → PILOT LAUNCH
-      (la FACB agrupa bajo ese nombre el costo del servicio de lancha)
-    - TOLL DUES con comprobante CARP → TOLL DUES (CARP)
-    - TOLL DUES con comprobante AGP  → TOLL DUES (AGP)
-    - Si hay ambos CARP y AGP: el TC más bajo → AGP, el más alto → CARP
+    - TOLL DUES → TOLL DUES (CARP) o TOLL DUES (AGP) según comprobantes
     """
     concept = normalize_concept(raw_concept)
 
-    # RIVER PLATE PILOTAGE en TC alto con Glatil disponible → PILOT LAUNCH
+    # RIVER PLATE PILOTAGE en TC alto con Glatil → PILOT LAUNCH
     if (concept == "RIVER PLATE PILOTAGE"
             and tc > tc_base
             and analysis.get("glatil")):
         concept = "PILOT LAUNCH TRANSPORTATION RIVER PLATE"
 
-    # TOLL DUES → distinguir AGP vs CARP
+    # TOLL DUES → AGP o CARP
     if concept == "TOLL DUES":
         has_agp  = bool(analysis.get("agp"))
         has_carp = bool(analysis.get("carp"))
         if has_agp and has_carp:
-            # Determinar qué TC corresponde a cada uno leyendo las FACBs
-            # Por convención ISA: el TC más bajo → AGP, el más alto → CARP
+            # TC mínimo → AGP; el resto → CARP
             toll_tcs = sorted(
                 f["tc"] for f in analysis.get("facbs", [])
                 if f.get("type") == "port_expenses" and f.get("tc")
@@ -125,35 +162,12 @@ def _normalize_concept_with_context(raw_concept, tc, tc_base, analysis):
     return concept
 
 
-def normalize_concept(raw):
-    """Normaliza el nombre del concepto de la FACB al nombre canónico del voucher."""
-    k = raw.upper().strip().replace("PRACTIQUE", "PRATIQUE")
-    return CONCEPT_ALIASES.get(k, k)
-
+# ══════════════════════════════════════════════════════════════════════════════
+# MAPEADOR CONCEPTO → COMPROBANTE DE PROVEEDOR
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
-    """
-    Retorna [(filename, pages_or_None)] para el comprobante que corresponde
-    al concepto dado. Reglas:
-    - TAX, AGENCY FEE → sin comprobante
-    - PILOT LAUNCH → Glatil USD 4,440 únicamente
-    - TOLL DUES → AGP o CARP según TC
-    - RIVER PLATE PILOTAGE → Ripla (solo p1 de cada archivo)
-    - RIVER PARANA PILOTAGE → Multipar/COPRAC/River Pilot (todos, maniobra o no)
-    - RIVER PARANA PILOTAGE ANCHORAGE MANEUVER → solo Multipar con maniobra
-    - PORT PILOTAGE → COOP Practicos del Parana
-    - LAUNCH SERVICES FOR CLEARANCE → Gente de Rio is_clearance=True
-    - MOORING → Plate Amarres + Gente de Rio is_mooring=True
-    - PORT DUES → Terminal portuario
-    - ENTRANCE AND LIGHT DUES → ENAPRO (páginas de Maritime)
-    - CUSTOM HOUSE EXPENSES → Centro Nav + Maritime AFIP/SSEE
-    - COAST GUARD EXPENSES → páginas de Maritime (SSEE permanencia)
-    - MIGRATION EXPENSES / MIGRATION EXPENSES - OUTWARD → Maritime Migration
-    - GARBAGE → Maritime SENASA
-    - MANDATORY HOLDS → Maritime compulsory_insp
-    - HEADCLERK → Maritime headclerk
-    - SANITARY → Maritime sanitary
-    """
+    """Retorna [(filename, pages_or_None)] para el comprobante del concepto."""
     c = concept_canonical
 
     # Sin comprobante
@@ -168,15 +182,11 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
                 import fitz as _fz
                 text = "".join(pg.get_text()
                                for pg in _fz.open(os.path.join(work_dir, fname)))
-                # Detectar montos inválidos en cualquier formato numérico
-                # Formato UY: "6.154,80" o "6.154,00" o texto "6.15" truncado
-                # Formato AR: "6,154.80"
                 invalid = (
                     "5,234" in text or "5.234" in text or
                     "6,154" in text or "6.154" in text or
-                    "6.15" in text   # formato truncado UY
+                    "6.15"  in text
                 )
-                # Confirmar que tiene 4,440
                 valid = "4,440" in text or "4.440" in text
                 if invalid and not valid:
                     print(f"  ⚠ Glatil excluido: {fname}")
@@ -186,7 +196,7 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
             inv.append((fname, None))
         return inv
 
-    # TOLL DUES → AGP
+    # TOLL DUES (AGP)
     if c in ("TOLL DUES", "TOLL DUES (AGP)"):
         return [(f, None) for f in analysis.get("agp", [])]
 
@@ -206,31 +216,27 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
     if c == "RIVER PLATE PILOTAGE":
         return [(r["filename"], [0]) for r in analysis.get("practicaje_rp", [])]
 
-    # RIVER PLATE DELAY → Ripla con demora
     if c == "RIVER PLATE PILOTAGE (DELAY)":
         return [(r["filename"], [0]) for r in analysis.get("practicaje_rp", [])
                 if r.get("has_demora")]
 
-    # RIVER PLATE ANCHORAGE → Ripla con maniobra
     if c == "RIVER PLATE PILOTAGE ANCHORAGE MANEUVER":
         return [(r["filename"], [0]) for r in analysis.get("practicaje_rp", [])
                 if r.get("has_maniobra") and r.get("maniobra_amount", 0) > 0]
 
-    # RIVER PARANA PILOTAGE → todos los Multipar/COPRAC/River Pilot
+    # RIVER PARANA PILOTAGE → todos los Multipar/COPRAC
     if c == "RIVER PARANA PILOTAGE":
         return [(r["filename"], None) for r in analysis.get("coprac", [])]
 
-    # RIVER PARANA DELAY
     if c == "RIVER PARANA PILOTAGE (DELAY)":
         return [(r["filename"], None) for r in analysis.get("coprac", [])
                 if r.get("has_demora")]
 
-    # RIVER PARANA ANCHORAGE → solo con maniobra real
     if c == "RIVER PARANA PILOTAGE ANCHORAGE MANEUVER":
         return [(r["filename"], None) for r in analysis.get("coprac", [])
                 if r.get("has_maniobra") and r.get("maniobra_amount", 0) > 0]
 
-    # PORT PILOTAGE → Coop Practicos del Parana (Rosario Pilots)
+    # PORT PILOTAGE → Coop Practicos del Parana
     if c == "PORT PILOTAGE":
         return [(r["filename"], None) for r in analysis.get("rosario_pilots", [])]
 
@@ -243,7 +249,7 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
         return [(r["filename"], None) for r in analysis.get("amarre_coral", [])
                 if r.get("is_clearance")]
 
-    # LAUNCH SERVICES AT ZONA COMUN → Lanchas del Este
+    # LAUNCH SERVICES AT ZONA COMUN
     if "ZONA COMUN" in c:
         return [(r["filename"], None) for r in analysis.get("amarre_coral", [])
                 if "LANCHAS DEL ESTE" in r["filename"].upper()]
@@ -255,25 +261,23 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
         inv += mar_pages.get("MOORING & UNMOORING SERVICES", [])
         return inv
 
-    # CUSTOM HOUSE EXPENSES → Centro Nav + páginas afip_lman de Maritime (incluyendo imágenes)
+    # CUSTOM HOUSE EXPENSES → Centro Nav + Maritime AFIP/SSEE
     if c == "CUSTOM HOUSE EXPENSES":
         nav = [(f, None) for f in analysis.get("centro_nav", [])]
-        mar_ch = mar_pages.get("CUSTOM HOUSE EXPENSES", [])
-        return nav + mar_ch
+        mar = mar_pages.get("CUSTOM HOUSE EXPENSES", [])
+        return nav + mar
 
-    # CUSTOM HOUSE PERMANENCE
     if c == "CUSTOM HOUSE PERMANENCE":
         return mar_pages.get("CUSTOM HOUSE PERMANENCE", [])
 
-    # CUSTOM HOUSE EXPENSE (CARGO)
     if "CARGO" in c and "CUSTOM HOUSE" in c:
         return mar_pages.get("CUSTOM HOUSE EXPENSE (CARGO)", [])
 
-    # COAST GUARD EXPENSES → páginas de Maritime clasificadas como coast_guard
+    # COAST GUARD EXPENSES
     if "COAST GUARD" in c:
         return mar_pages.get("COAST GUARD EXPENSES", [])
 
-    # MIGRATION EXPENSES y variantes
+    # MIGRATION
     if "MIGRATION" in c:
         return mar_pages.get("MIGRATION EXPENSES", [])
 
@@ -285,13 +289,12 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
     if "GARBAGE" in c:
         return mar_pages.get("GARBAGE COMPULSORY INSPECTION", [])
 
-    # MANDATORY HOLDS INSPECTION (no reinspection)
+    # MANDATORY HOLDS
     if "MANDATORY HOLDS" in c and "RE" not in c:
         ext = [(f, None) for f in analysis.get("mandatory_insp_ext", [])]
         mar = mar_pages.get("MANDATORY HOLDS INSPECTION", [])
         return mar + ext
 
-    # MANDATORY HOLDS RE-INSPECTION
     if "MANDATORY HOLDS" in c and "RE" in c:
         return mar_pages.get("MANDATORY HOLDS RE-INSPECTION", [])
 
@@ -309,7 +312,7 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
 
     # PEST CONTROL
     if "PEST" in c:
-        inv = mar_pages.get("PEST CONTROL", [])
+        inv  = mar_pages.get("PEST CONTROL", [])
         inv += [(f, None) for f in analysis.get("ammoca", [])]
         return inv
 
@@ -317,9 +320,9 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
     if "OSRO" in c:
         return mar_pages.get("OSRO ANNEX 18", [])
 
-    # Towage
+    # TOWAGE
     if "TOWAGE" in c:
-        inv = [(f, None) for f in analysis.get("puerto_mariel", [])]
+        inv  = [(f, None) for f in analysis.get("puerto_mariel", [])]
         inv += [(f, None) for f in analysis.get("towage_sl", [])]
         return inv
 
@@ -327,186 +330,86 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CLASE BASE PARA TODOS LOS PUERTOS
+# LÓGICA COMÚN DE BUILD PARA TODOS LOS PUERTOS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _build_entries(analysis, work_dir, mar_pages):
+    """
+    Lee todas las FACBs port_expenses en el orden correcto y genera
+    la lista de entries {concept, amount, tc, invoices}.
+    """
+    from assembler import extract_facb_line_amounts
+
+    facbs_raw = [
+        {**f, "_fpath": os.path.join(work_dir, f["filename"])}
+        for f in analysis.get("facbs", [])
+        if f.get("type") == "port_expenses" and f.get("tc") and f.get("filename")
+    ]
+
+    # Ordenar por contenido: puerto base → CARP/Pilot → AGP
+    facbs_sorted = sorted(facbs_raw, key=lambda f: _facb_sort_key(f, analysis))
+
+    # tc_base = TC de la FACB de gastos de puerto base (grupo 0)
+    tc_base = 0
+    for f in facbs_sorted:
+        if _facb_sort_key(f, analysis)[0] == 0:
+            tc_base = f["tc"]
+            break
+    if tc_base == 0:
+        tc_base = min((f["tc"] for f in facbs_sorted), default=0)
+
+    result = []
+    for facb in facbs_sorted:
+        tc    = facb["tc"]
+        fpath = facb.get("_fpath") or os.path.join(work_dir, facb["filename"])
+        if not os.path.exists(fpath):
+            continue
+
+        la = extract_facb_line_amounts(fpath)
+        for raw_concept, amount in la.items():
+            if amount <= 0:
+                continue
+            concept = _normalize_concept_with_context(raw_concept, tc, tc_base, analysis)
+            if "AGENCY FEE" in concept:
+                continue
+            invoices = _get_invoices_for_concept(concept, analysis, work_dir, mar_pages)
+            result.append({
+                "concept":  concept,
+                "amount":   amount,
+                "tc":       tc,
+                "invoices": invoices,
+                "_facb":    facb.get("filename", ""),
+            })
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLASES DE PUERTO
 # ══════════════════════════════════════════════════════════════════════════════
 
 class PortBase:
     name       = ""
     short_name = ""
 
-    def _tc_agency(self, a):
-        keys = sorted(a["tc_groups"].keys())
-        return next((f["tc"] for f in a["facbs"] if f.get("type") == "agency"),
-                    keys[0] if keys else 1366.5)
+    def build_invoice_map(self, analysis, work_dir, line_amounts=None):
+        mar_pages = _mar_inv_shared(analysis)
+        return _build_entries(analysis, work_dir, mar_pages)
 
-    def _tc_port_min(self, a):
-        tcs = [f["tc"] for f in a["facbs"]
-               if f.get("type") == "port_expenses" and f.get("tc")]
-        return min(tcs) if tcs else self._tc_agency(a)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# SAN LORENZO / ARROYO SECO / GRAL. LAGOS
-# ══════════════════════════════════════════════════════════════════════════════
 
 class SanLorenzoPort(PortBase):
     name       = "San Lorenzo Port"
     short_name = "SAN LORENZO"
 
-    def build_invoice_map(self, analysis, work_dir, line_amounts=None):
-        """
-        LÓGICA NUEVA:
-        1. Lee cada FACB port_expenses en orden de TC descendente.
-        2. Por cada línea de la FACB, crea un entry de voucher.
-        3. Busca el comprobante de proveedor correspondiente.
-        4. El orden = orden de las líneas en las FACBs.
-
-        line_amounts se ignora — se usa directamente de las FACBs.
-        """
-        from assembler import extract_facb_line_amounts
-
-        mar_pages = _mar_inv_shared(analysis)
-
-        # Ordenar FACBs: TC descendente, dentro de cada TC agency→port_exp
-        facbs_sorted = sorted(
-            [f for f in analysis.get("facbs", [])
-             if f.get("type") == "port_expenses" and f.get("tc") and f.get("filename")],
-            key=lambda f: -f["tc"]   # descendente
-        )
-
-        # TC base = el TC más bajo de las FACBs port_expenses
-        tc_base = min((f["tc"] for f in facbs_sorted), default=0)
-
-        result = []
-
-        for facb in facbs_sorted:
-            tc       = facb["tc"]
-            fpath    = os.path.join(work_dir, facb["filename"])
-            if not os.path.exists(fpath):
-                continue
-
-            la = extract_facb_line_amounts(fpath)
-
-            for raw_concept, amount in la.items():
-                if amount <= 0:
-                    continue
-
-                # Normalización contextual: usa tc, tc_base y analysis
-                concept = _normalize_concept_with_context(
-                    raw_concept, tc, tc_base, analysis
-                )
-
-                # AGENCY FEE: no genera voucher en el cuerpo
-                if "AGENCY FEE" in concept:
-                    continue
-
-                # Buscar comprobante
-                invoices = _get_invoices_for_concept(
-                    concept, analysis, work_dir, mar_pages
-                )
-
-                result.append({
-                    "concept":  concept,
-                    "amount":   amount,
-                    "tc":       tc,
-                    "invoices": invoices,
-                })
-
-        return result
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# BAHIA BLANCA
-# ══════════════════════════════════════════════════════════════════════════════
 
 class BahiaBlancaPort(PortBase):
     name       = "Bahia Blanca Port"
     short_name = "BAHIA BLANCA"
 
-    def build_invoice_map(self, analysis, work_dir, line_amounts=None):
-        from assembler import extract_facb_line_amounts
-
-        mar_pages = _mar_inv_shared(analysis)
-
-        facbs_sorted = sorted(
-            [f for f in analysis.get("facbs", [])
-             if f.get("type") == "port_expenses" and f.get("tc") and f.get("filename")],
-            key=lambda f: -f["tc"]
-        )
-
-        tc_base = min((f["tc"] for f in facbs_sorted), default=0)
-        result = []
-        for facb in facbs_sorted:
-            tc    = facb["tc"]
-            fpath = os.path.join(work_dir, facb["filename"])
-            if not os.path.exists(fpath):
-                continue
-            la = extract_facb_line_amounts(fpath)
-            for raw_concept, amount in la.items():
-                if amount <= 0:
-                    continue
-                concept = _normalize_concept_with_context(
-                    raw_concept, tc, tc_base, analysis
-                )
-                if "AGENCY FEE" in concept:
-                    continue
-                invoices = _get_invoices_for_concept(
-                    concept, analysis, work_dir, mar_pages
-                )
-                result.append({
-                    "concept":  concept,
-                    "amount":   amount,
-                    "tc":       tc,
-                    "invoices": invoices,
-                })
-        return result
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# NECOCHEA
-# ══════════════════════════════════════════════════════════════════════════════
 
 class NecocheaPort(PortBase):
     name       = "Necochea Port"
     short_name = "NECOCHEA"
-
-    def build_invoice_map(self, analysis, work_dir, line_amounts=None):
-        from assembler import extract_facb_line_amounts
-
-        mar_pages = _mar_inv_shared(analysis)
-
-        facbs_sorted = sorted(
-            [f for f in analysis.get("facbs", [])
-             if f.get("type") == "port_expenses" and f.get("tc") and f.get("filename")],
-            key=lambda f: -f["tc"]
-        )
-
-        tc_base = min((f["tc"] for f in facbs_sorted), default=0)
-        result = []
-        for facb in facbs_sorted:
-            tc    = facb["tc"]
-            fpath = os.path.join(work_dir, facb["filename"])
-            if not os.path.exists(fpath):
-                continue
-            la = extract_facb_line_amounts(fpath)
-            for raw_concept, amount in la.items():
-                if amount <= 0:
-                    continue
-                concept = _normalize_concept_with_context(
-                    raw_concept, tc, tc_base, analysis
-                )
-                if "AGENCY FEE" in concept:
-                    continue
-                invoices = _get_invoices_for_concept(
-                    concept, analysis, work_dir, mar_pages
-                )
-                result.append({
-                    "concept":  concept,
-                    "amount":   amount,
-                    "tc":       tc,
-                    "invoices": invoices,
-                })
-        return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -519,7 +422,7 @@ def detect_port(analysis):
         return NecocheaPort()
     if "BAHIA BLANCA" in port_str or "BAHÍA BLANCA" in port_str:
         return BahiaBlancaPort()
-    if any(p in port_str for p in ("SAN LORENZO","ARROYO SECO","GRAL. LAGOS")):
+    if any(p in port_str for p in ("SAN LORENZO", "ARROYO SECO", "GRAL. LAGOS")):
         return SanLorenzoPort()
     if analysis.get("consorcio_quequen") or analysis.get("melluso") or analysis.get("pilotaje"):
         return NecocheaPort()
