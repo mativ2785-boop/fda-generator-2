@@ -148,16 +148,27 @@ def _facb_sort_key(facb_dict, analysis):
     if has_rp and facb_dict.get("tc", 0) > tc_base and has_glatil:
         return (1, num)
     if has_toll:
-        # Si hay ambos AGP y CARP: TC mínimo → AGP (último), resto → CARP (grupo 1)
+        # Si hay ambos AGP y CARP: la FACB con menor TC entre las que tienen TOLL DUES → AGP (último)
         if has_agp and has_carp:
-            tc = facb_dict.get("tc", 0)
-            if tc == tc_base:
-                return (2, num)
+            # Calcular el TC mínimo solo entre FACBs con TOLL DUES
+            toll_tcs = []
+            for f in analysis.get("facbs", []):
+                if f.get("type") == "port_expenses" and f.get("tc") and f.get("filename"):
+                    fpath_t = f.get("_fpath") or os.path.join(
+                        analysis.get("_work_dir", "."), f["filename"])
+                    try:
+                        la_t = extract_facb_line_amounts(fpath_t)
+                        if any("TOLL DUES" in k.upper() for k in la_t):
+                            toll_tcs.append(f["tc"])
+                    except Exception:
+                        pass
+            if toll_tcs and facb_dict.get("tc", 0) == min(toll_tcs):
+                return (2, num)   # AGP → último
             else:
-                return (1, num)
+                return (1, num)   # CARP → segundo
         if has_agp and not has_carp:
-            return (2, num)   # solo AGP → último
-        return (1, num)       # CARP o desconocido → grupo 1
+            return (2, num)
+        return (1, num)
     return (0, num)
 
 
@@ -199,12 +210,26 @@ def _normalize_concept_with_context(raw_concept, tc, tc_base, analysis):
         has_agp  = bool(analysis.get("agp"))
         has_carp = bool(analysis.get("carp"))
         if has_agp and has_carp:
-            # TC mínimo → AGP; resto → CARP
-            toll_tcs = sorted(
-                f["tc"] for f in analysis.get("facbs", [])
-                if f.get("type") == "port_expenses" and f.get("tc")
-            )
-            concept = "TOLL DUES (AGP)" if (toll_tcs and tc == min(toll_tcs)) else "TOLL DUES (CARP)"
+            # TC mínimo ENTRE LAS FACBs CON TOLL DUES → AGP
+            # (no entre todas las FACBs, porque la de port base tiene TC más bajo)
+            from assembler import extract_facb_line_amounts
+            toll_tcs = []
+            for f in analysis.get("facbs", []):
+                if f.get("type") == "port_expenses" and f.get("tc") and f.get("filename"):
+                    fpath = os.path.join(
+                        analysis.get("_work_dir", "."), f["filename"]
+                    ) if "." in f.get("filename", "") else f.get("filename", "")
+                    # Verificar si esta FACB tiene TOLL DUES
+                    try:
+                        la = extract_facb_line_amounts(fpath)
+                        if any("TOLL DUES" in k.upper() for k in la):
+                            toll_tcs.append(f["tc"])
+                    except Exception:
+                        pass
+            if toll_tcs and tc == min(toll_tcs):
+                concept = "TOLL DUES (AGP)"
+            else:
+                concept = "TOLL DUES (CARP)"
         elif has_agp:
             concept = "TOLL DUES (AGP)"
         elif has_carp:
@@ -420,6 +445,8 @@ def _build_entries(analysis, work_dir, mar_pages):
         tc_base = min((f["tc"] for f in facbs_sorted), default=0)
 
     result = []
+    # Guardar work_dir en analysis para que _normalize_concept_with_context lo acceda
+    analysis["_work_dir"] = work_dir
     for facb in facbs_sorted:
         tc    = facb["tc"]
         fpath = facb.get("_fpath") or os.path.join(work_dir, facb["filename"])
