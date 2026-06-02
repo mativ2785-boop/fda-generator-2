@@ -1,25 +1,19 @@
 """
-ports.py — ISA FDA Generator v3.2 (Jun 2026)
+ports.py — ISA FDA Generator v3.3 (Jun 2026)
 
 PRINCIPIO FUNDAMENTAL:
   Las FACBs ISA son la fuente de verdad del orden y cantidad de vouchers.
   Cada línea de la FACB → 1 voucher ISA + 1 comprobante de proveedor.
-
-  Orden de las FACBs port_expenses en el FDA:
-    1. FACB con gastos de puerto base (PORT DUES, ENTRANCE, PILOTAJE, etc.)
-    2. FACB con TOLL DUES (CARP) y/o PILOT LAUNCH (Glatil)
-    3. FACB con TOLL DUES (AGP) — siempre la última
 """
 
 import os, re as _re
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HELPERS COMPARTIDOS
+# HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _mar_inv_shared(analysis, exclude_mooring_img=True):
-    """Construye dict voucher → [(filename, [page_indices])] desde Maritime."""
     mar_pages = {}
     for m in analysis.get("maritime", []):
         for pg in m["pages"]:
@@ -40,17 +34,30 @@ def _mar_inv_shared(analysis, exclude_mooring_img=True):
 
 def _only_original(fname, work_dir):
     """
-    Para archivos con ORIGINAL + DUPLICADO/TRIPLICADO → solo p0.
-    Para archivos de 1 página → None (incluir todo).
+    Para archivos con más de 1 página, retorna solo las páginas útiles:
+    - Si tiene DUPLICADO/TRIPLICADO en el texto → solo p0
+    - Si todas las páginas son idénticas → solo p0 (COPRAC LASKARO)
+    - Si p1 dice ORIGINAL y p2+ son imágenes sin texto → solo p0
+    - Sino → incluir todo (None)
     """
     try:
         import fitz as _fz
         doc = _fz.open(os.path.join(work_dir, fname))
         if doc.page_count <= 1:
             return None
-        text_all = "".join(pg.get_text() for pg in doc).upper()
+        texts = [doc[i].get_text() for i in range(doc.page_count)]
+        text_all = "".join(texts).upper()
+        # Flag explícito de duplicado
         if "DUPLICADO" in text_all or "TRIPLICADO" in text_all:
             return [0]
+        # Páginas completamente idénticas
+        if len(set(texts)) == 1:
+            return [0]
+        # p1 tiene ORIGINAL y p2+ son imágenes sin texto
+        if "ORIGINAL" in texts[0].upper():
+            rest_are_images = all(not texts[i].strip() for i in range(1, doc.page_count))
+            if rest_are_images:
+                return [0]
         return None
     except Exception:
         return None
@@ -58,9 +65,8 @@ def _only_original(fname, work_dir):
 
 def _dedup_by_invoice_number(file_list, work_dir):
     """
-    Elimina duplicados por número de factura.
-    Si dos archivos tienen el mismo número → incluye solo el primero.
-    Si un archivo tiene DUPLICADO/TRIPLICADO → solo incluye p0.
+    Deduplica por número de factura. Si dos archivos tienen el mismo número → solo el primero.
+    También aplica _only_original a cada archivo.
     """
     import fitz as _fz
 
@@ -73,9 +79,9 @@ def _dedup_by_invoice_number(file_list, work_dir):
             doc = _fz.open(fpath)
             text_all = "".join(pg.get_text() for pg in doc).upper()
 
-            # Si tiene DUPLICADO/TRIPLICADO → solo p0
-            if "DUPLICADO" in text_all or "TRIPLICADO" in text_all:
-                pages = [0]
+            # Aplicar _only_original
+            if pages is None:
+                pages = _only_original(fname, work_dir)
 
             # Extraer número de factura
             p0_text = doc[0].get_text()
@@ -106,7 +112,7 @@ def _dedup_by_invoice_number(file_list, work_dir):
 
 def _facb_sort_key(facb_dict, analysis):
     """
-    Orden de inserción de FACBs en el FDA por contenido:
+    Orden de las FACBs en el FDA:
       grupo 0 — gastos de puerto base (PORT DUES, ENTRANCE, PILOTAJE, etc.)
       grupo 1 — TOLL DUES (CARP) y/o PILOT LAUNCH (Glatil)
       grupo 2 — TOLL DUES (AGP) — siempre el último
@@ -119,7 +125,7 @@ def _facb_sort_key(facb_dict, analysis):
     except Exception:
         la = {}
 
-    keys_up  = [k.upper() for k in la.keys()]
+    keys_up   = [k.upper() for k in la.keys()]
     has_port  = any("PORT DUES"    in k for k in keys_up)
     has_entr  = any("ENTRANCE"     in k for k in keys_up)
     has_pilot = any("PILOT LAUNCH" in k for k in keys_up)
@@ -142,11 +148,16 @@ def _facb_sort_key(facb_dict, analysis):
     if has_rp and facb_dict.get("tc", 0) > tc_base and has_glatil:
         return (1, num)
     if has_toll:
+        # Si hay ambos AGP y CARP: TC mínimo → AGP (último), resto → CARP (grupo 1)
+        if has_agp and has_carp:
+            tc = facb_dict.get("tc", 0)
+            if tc == tc_base:
+                return (2, num)
+            else:
+                return (1, num)
         if has_agp and not has_carp:
-            return (2, num)
-        if has_carp:
-            return (1, num)
-        return (1, num)
+            return (2, num)   # solo AGP → último
+        return (1, num)       # CARP o desconocido → grupo 1
     return (0, num)
 
 
@@ -173,9 +184,9 @@ def normalize_concept(raw):
 
 def _normalize_concept_with_context(raw_concept, tc, tc_base, analysis):
     """
-    Normaliza el concepto de la FACB al nombre del voucher, con contexto TC.
-    - RIVER PLATE PILOTAGE en TC alto con Glatil → PILOT LAUNCH
-    - TOLL DUES → TOLL DUES (CARP) o TOLL DUES (AGP)
+    Normaliza concepto FACB al nombre de voucher con contexto.
+    - RIVER PLATE PILOTAGE en TC alto + Glatil → PILOT LAUNCH
+    - TOLL DUES → TOLL DUES (CARP) o TOLL DUES (AGP) según comprobantes
     """
     concept = normalize_concept(raw_concept)
 
@@ -188,6 +199,7 @@ def _normalize_concept_with_context(raw_concept, tc, tc_base, analysis):
         has_agp  = bool(analysis.get("agp"))
         has_carp = bool(analysis.get("carp"))
         if has_agp and has_carp:
+            # TC mínimo → AGP; resto → CARP
             toll_tcs = sorted(
                 f["tc"] for f in analysis.get("facbs", [])
                 if f.get("type") == "port_expenses" and f.get("tc")
@@ -197,6 +209,8 @@ def _normalize_concept_with_context(raw_concept, tc, tc_base, analysis):
             concept = "TOLL DUES (AGP)"
         elif has_carp:
             concept = "TOLL DUES (CARP)"
+        # Si no hay ni AGP ni CARP: dejar como TOLL DUES genérico
+        # El comprobante se resolverá por el contexto
 
     return concept
 
@@ -213,7 +227,7 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
     if "TAX ON CREDIT/DEBIT" in c or "AGENCY FEE" in c:
         return []
 
-    # PILOT LAUNCH — solo Glatil USD 4,440 (excluir 5,234.80 y 6,154.80)
+    # PILOT LAUNCH — solo Glatil USD 4,440
     if "PILOT LAUNCH" in c:
         inv = []
         for fname in analysis.get("glatil", []):
@@ -232,13 +246,20 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
             inv.append((fname, None))
         return inv
 
-    # TOLL DUES (AGP)
+    # TOLL DUES — AGP o CARP según lo que haya disponible
     if c in ("TOLL DUES", "TOLL DUES (AGP)"):
-        return [(f, None) for f in analysis.get("agp", [])]
-
-    # TOLL DUES (CARP)
-    if c == "TOLL DUES (CARP)":
+        agp = [(f, None) for f in analysis.get("agp", [])]
+        if agp:
+            return agp
+        # Si no hay AGP, intentar con CARP como fallback
         return [(f, None) for f in analysis.get("carp", [])]
+
+    if c == "TOLL DUES (CARP)":
+        carp = [(f, None) for f in analysis.get("carp", [])]
+        if carp:
+            return carp
+        # Fallback a AGP si no hay CARP
+        return [(f, None) for f in analysis.get("agp", [])]
 
     # PORT DUES → terminal portuario
     if c == "PORT DUES":
@@ -263,31 +284,26 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
 
     # RIVER PARANA PILOTAGE → COPRAC/Multipar — deduplicado
     if c == "RIVER PARANA PILOTAGE":
-        raw = [(r["filename"], _only_original(r["filename"], work_dir))
-               for r in analysis.get("coprac", [])]
+        raw = [(r["filename"], None) for r in analysis.get("coprac", [])]
         return _dedup_by_invoice_number(raw, work_dir)
 
     if c == "RIVER PARANA PILOTAGE (DELAY)":
-        raw = [(r["filename"], _only_original(r["filename"], work_dir))
-               for r in analysis.get("coprac", [])
+        raw = [(r["filename"], None) for r in analysis.get("coprac", [])
                if r.get("has_demora")]
         return _dedup_by_invoice_number(raw, work_dir)
 
     if c == "RIVER PARANA PILOTAGE ANCHORAGE MANEUVER":
-        raw = [(r["filename"], _only_original(r["filename"], work_dir))
-               for r in analysis.get("coprac", [])
+        raw = [(r["filename"], None) for r in analysis.get("coprac", [])
                if r.get("has_maniobra") and r.get("maniobra_amount", 0) > 0]
         return _dedup_by_invoice_number(raw, work_dir)
 
     # PORT PILOTAGE → Coop Practicos del Parana — deduplicado
     if c == "PORT PILOTAGE":
-        raw = [(r["filename"], _only_original(r["filename"], work_dir))
-               for r in analysis.get("rosario_pilots", [])]
+        raw = [(r["filename"], None) for r in analysis.get("rosario_pilots", [])]
         return _dedup_by_invoice_number(raw, work_dir)
 
     if c == "PORT PILOTAGE (DELAY)":
-        raw = [(r["filename"], _only_original(r["filename"], work_dir))
-               for r in analysis.get("rosario_pilots", [])
+        raw = [(r["filename"], None) for r in analysis.get("rosario_pilots", [])
                if r.get("has_demora")]
         return _dedup_by_invoice_number(raw, work_dir)
 
@@ -385,10 +401,6 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _build_entries(analysis, work_dir, mar_pages):
-    """
-    Lee todas las FACBs port_expenses en el orden correcto y genera
-    la lista de entries {concept, amount, tc, invoices}.
-    """
     from assembler import extract_facb_line_amounts
 
     facbs_raw = [
@@ -459,10 +471,6 @@ class NecocheaPort(PortBase):
     name       = "Necochea Port"
     short_name = "NECOCHEA"
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DETECCIÓN DE PUERTO
-# ══════════════════════════════════════════════════════════════════════════════
 
 def detect_port(analysis):
     port_str = (analysis.get("port") or "").upper()
