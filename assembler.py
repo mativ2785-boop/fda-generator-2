@@ -459,18 +459,20 @@ def normalize_line_amounts_with_tc(analysis, work_dir):
 
 def build_fda(analysis, work_dir, output_path, advance, date):
     """
-    Ensambla el FDA completo.
+    Orden exacto del FDA San Lorenzo (confirmado por ISA):
 
-    REGLA REAL (confirmada del FDA VTC PHOENIX CORRECTO):
-      1. SUMARIO
-      2. SOF
-      3. BNA (del TC base — siempre)
-      4. Todas las NCBs (todos los TCs, juntas)
-      5. FACB Agency Fee
-      6. Vouchers en orden:
-         - Para TCs != base: BNA extra justo antes del primer voucher del TC
-         - FACB port_exp: justo antes del primer voucher cuyo concepto
-           coincide con el primer ítem de esa FACB
+    SUMARIO
+    SOF
+    BNA (tipo de cambio de la FACB Agency Fee)
+    NCBs (todas, orden TC descendente)
+    FACB Agency Fee
+    VOUCHER AGENCY FEE
+    --- para cada FACB port_expenses, en orden TC descendente: ---
+      FACB port_expenses
+      [si TC != TC_agency: BNA del TC]
+        → VOUCHER concepto_1 + comprobante proveedor
+        → VOUCHER concepto_2 + comprobante proveedor
+        → ...todos los vouchers/comprobantes de esa FACB...
     """
     writer = PdfWriter()
 
@@ -493,164 +495,152 @@ def build_fda(analysis, work_dir, output_path, advance, date):
                 extract_logo_from_facb(fp_fn(fname), LOGO)
                 break
 
-    line_amounts = normalize_line_amounts_with_tc(analysis, work_dir)
-
     def _is_ncb(lbl):
         ll = lbl.lower()
         return any(k in ll for k in ("crédito","credito","ncb","credit note","nota de cr"))
 
-    tc_base = min(tc_groups.keys()) if tc_groups else None
+    # ── Separar FACBs por tipo ────────────────────────────────────────────────
+    ncb_facbs    = []  # (num, fname, tc)  — todas las NCBs
+    agency_facbs = []  # (num, fname, tc)  — Agency Fee
+    port_facbs   = []  # (num, fname, tc)  — port expenses, orden TC descendente
 
-    # Separar NCBs, Agency Fee y port_expenses
-    all_ncbs    = []  # (num, lbl, amt, fname, tc)
-    agency_facb = []  # (num, lbl, amt, fname, tc)
-    port_facbs  = {}  # tc → [(num, lbl, amt, fname)]
+    for f in analysis.get("facbs", []):
+        num   = f.get("number", "")
+        fname = f.get("filename", "")
+        tc    = f.get("tc", 0)
+        if not fname or not os.path.exists(fp_fn(fname)):
+            continue
+        t = f.get("type", "")
+        if t == "ncb":
+            ncb_facbs.append((num, fname, tc))
+        elif t == "agency":
+            agency_facbs.append((num, fname, tc))
+        elif t == "port_expenses":
+            port_facbs.append((num, fname, tc))
 
-    for tc in sorted(tc_groups.keys()):
-        for (num, lbl, amt) in tc_groups[tc]:
-            fname = facb_files.get(num)
-            if not fname or not os.path.exists(fp_fn(fname)):
+    # NCBs: orden TC descendente
+    ncb_facbs.sort(key=lambda x: -x[2])
+    # Port expenses: orden TC descendente (los TCs altos van primero en el FDA)
+    port_facbs.sort(key=lambda x: -x[2])
+
+    # TC de la FACB Agency Fee (para el BNA inicial)
+    tc_agency = agency_facbs[0][2] if agency_facbs else (
+        min(tc_groups.keys()) if tc_groups else 0
+    )
+
+    # BNA inicial = el que corresponde al TC de Agency Fee
+    def _bna_for_tc(tc):
+        # Buscar en bna_list el que más se acerca al TC dado
+        all_bnas = ([analysis["bna"]] if analysis["bna"] else []) + \
+                   analysis.get("bna_extra", [])
+        best = None
+        best_diff = 9999
+        for b in all_bnas:
+            val = _get_bna_tc(fp_fn(b))
+            if val is None:
                 continue
-            if _is_ncb(lbl):
-                all_ncbs.append((num, lbl, amt, fname, tc))
-            elif "agency" in lbl.lower():
-                agency_facb.append((num, lbl, amt, fname, tc))
-            else:
-                port_facbs.setdefault(tc, []).append((num, lbl, amt, fname))
+            diff = abs(val - tc)
+            if diff < best_diff:
+                best_diff = diff
+                best = b
+        return best
 
-    # Mapa: primer concepto de la FACB → (tc, num, fname)
-    # Determina ante qué voucher se inserta cada FACB port_exp
-    concept_to_facb = {}
-    for tc in sorted(port_facbs.keys()):
-        for (num, lbl, amt, fname) in port_facbs[tc]:
-            la = extract_facb_line_amounts(fp_fn(fname))
-            if la:
-                first = list(la.keys())[0].upper()
-                concept_to_facb[first] = (tc, num, fname)
+    # invoice_map agrupa los vouchers por FACB: { fname_facb → [entries] }
+    port_config  = _detect_port(analysis)
+    line_amounts = normalize_line_amounts_with_tc(analysis, work_dir)
+    all_entries  = port_config.build_invoice_map(analysis, work_dir, line_amounts)
 
-    port_config = _detect_port(analysis)
-    invoice_map = port_config.build_invoice_map(analysis, work_dir, line_amounts)
-    step = 4
+    # Agrupar entries por TC (para saber qué vouchers pertenecen a cada FACB)
+    entries_by_tc = {}
+    for e in all_entries:
+        entries_by_tc.setdefault(e["tc"], []).append(e)
 
-    # 1. Sumario
-    print("  [1] Sumario...")
+    step = 1
+
+    # ── 1. Sumario ────────────────────────────────────────────────────────────
+    print(f"  [{step}] Sumario...")
     bank_info = next((f for f in analysis.get("facbs", []) if f.get("bank_name")), None)
     for pg in make_summary(vessel, port, sailed, date, client,
                            advance, tc_groups_summary, bank_info).pages:
         writer.add_page(pg)
+    step += 1
 
-    # 2. SOF
+    # ── 2. SOF ────────────────────────────────────────────────────────────────
     if analysis["sof"]:
-        print("  [2] SOF...")
+        print(f"  [{step}] SOF...")
         add_pdf(writer, fp_fn(analysis["sof"]))
+        step += 1
 
-    # 3. BNA del TC base (siempre)
-    if analysis["bna"]:
-        print("  [3] BNA...")
-        add_pdf(writer, fp_fn(analysis["bna"]))
+    # ── 3. BNA del TC de Agency Fee ───────────────────────────────────────────
+    bna_agency = _bna_for_tc(tc_agency)
+    if bna_agency:
+        print(f"  [{step}] BNA (TC {tc_agency:g})...")
+        add_pdf(writer, fp_fn(bna_agency))
+        step += 1
 
-    # 4. Todas las NCBs juntas — orden DESCENDENTE por TC (el más alto primero)
-    all_ncbs.sort(key=lambda x: x[4], reverse=True)
-    for (num, lbl, amt, fname, tc) in all_ncbs:
+    # ── 4. NCBs (todas, TC descendente) ──────────────────────────────────────
+    for (num, fname, tc) in ncb_facbs:
         print(f"  [{step}] NCB {num} (TC {tc:g})")
         add_pdf(writer, fp_fn(fname))
         step += 1
 
-    # 5. FACB Agency Fee
-    for (num, lbl, amt, fname, tc) in agency_facb:
-        print(f"  [{step}] FACB Agency {num} (TC {tc:g})")
+    # ── 5. FACB Agency Fee + VOUCHER AGENCY FEE ──────────────────────────────
+    for (num, fname, tc) in agency_facbs:
+        print(f"  [{step}] FACB Agency Fee {num}")
         add_pdf(writer, fp_fn(fname))
         step += 1
 
-    # 5b. FACBs port_exp de TCs DISTINTOS al base cuyo PRIMER CONCEPTO
-    #     aparece ANTES que el primer voucher del TC base.
-    #     Solo las FACBs cuyo primer concepto matchea un voucher que viene
-    #     antes de PORT DUES (primer voucher del TC base).
-    # REGLA: cada FACB va JUSTO ANTES de su primer voucher, no todas juntas.
-    # Para TC 1462.74: FACB 30544 tiene primer concepto PILOT LAUNCH
-    #   → va justo antes del voucher PILOT LAUNCH
-    # Para TC 1400: FACB 30536 tiene primer concepto TOLL DUES
-    #   → va justo antes del voucher TOLL DUES
-    # → NINGUNA va aquí en el bloque inicial; todas se insertan inline en el loop
-    pass  # inserción inline en el loop de vouchers
-
-    # 6. Vouchers con FACBs port_exp intercaladas inline
-    tc_bna_inserted  = set()
-    tc_facb_inserted = set()
-
-    def _bna_for_tc(tc):
-        for bna_extra in analysis.get("bna_extra", []):
-            bna_tc_val = _get_bna_tc(fp_fn(bna_extra))
-            if bna_tc_val and abs(bna_tc_val - tc) < 2:
-                return bna_extra
-        return None
-
-    for entry in invoice_map:
-        tc         = entry["tc"]
-        concept    = entry["concept"]
-        concept_up = concept.upper()
-
-        # Suprimir voucher AGENCY FEE del cuerpo del FDA
-        if concept_up == "AGENCY FEE":
-            continue
-
-        # FACB port_exp primero, luego BNA (orden del FDA correcto: FACB → BNA → voucher)
-        if tc != tc_base:
-            # 1. FACB
-            if tc not in tc_facb_inserted and tc in port_facbs:
-                for first_concept, (ftc, fnum, ffname) in concept_to_facb.items():
-                    if ftc != tc:
-                        continue
-                    if (first_concept in concept_up or
-                            concept_up in first_concept or
-                            any(word in concept_up for word in first_concept.split()[:3]
-                                if len(word) > 4)):
-                        print(f"  [{step}] FACB {fnum} (TC {tc:g})")
-                        add_pdf(writer, fp_fn(ffname))
-                        step += 1
-                        tc_facb_inserted.add(tc)
-                        break
-            # 2. BNA después de la FACB
-            if tc not in tc_bna_inserted:
-                bna_file = _bna_for_tc(tc)
-                if bna_file:
-                    print(f"  [{step}] BNA TC {tc:g}")
-                    add_pdf(writer, fp_fn(bna_file))
-                    step += 1
-                tc_bna_inserted.add(tc)
-        else:
-            # TC base: solo FACB (BNA base ya fue insertado al inicio)
-            if tc not in tc_facb_inserted and tc in port_facbs:
-                for first_concept, (ftc, fnum, ffname) in concept_to_facb.items():
-                    if ftc != tc:
-                        continue
-                    if (first_concept in concept_up or
-                            concept_up in first_concept or
-                            any(word in concept_up for word in first_concept.split()[:3]
-                                if len(word) > 4)):
-                        print(f"  [{step}] FACB {fnum} (TC {tc:g})")
-                        add_pdf(writer, fp_fn(ffname))
-                        step += 1
-                        tc_facb_inserted.add(tc)
-                        break
-
-        # Voucher
+        # Voucher AGENCY FEE (sin comprobante)
+        agency_amt = next(
+            (f.get("total", 0) for f in analysis.get("facbs", [])
+             if f.get("type") == "agency" and f.get("number") == num),
+            0
+        )
         port_v = port.replace(" Port", "").replace(" port", "")
-        display = concept
-        if concept in ("TOLL DUES (AGP)", "TOLL DUES (CARP)"):
-            display = "TOLL DUES"
-        print(f"  [{step}] Voucher: {display} (TC {tc:g})")
-        for pg in make_voucher(display, entry["amount"], tc, vessel, sailed, port_v).pages:
+        print(f"  [{step}] Voucher: AGENCY FEE (TC {tc:g})")
+        for pg in make_voucher("AGENCY FEE", agency_amt, tc,
+                               vessel, sailed, port_v).pages:
             writer.add_page(pg)
         step += 1
 
-        for (fname, pages) in entry.get("invoices", []):
-            full = fp_fn(fname)
-            if os.path.exists(full):
-                n = add_pdf(writer, full, pages)
-                print(f"    + {fname} ({n} pgs)")
-            else:
-                print(f"    ⚠ {fname}")
+    # ── 6. Para cada FACB port_expenses (TC descendente): ─────────────────────
+    #       FACB → [BNA si TC != TC_agency] → vouchers + comprobantes
+    bnas_used = {bna_agency} if bna_agency else set()
+
+    for (num, fname, tc) in port_facbs:
+        # 6a. FACB port expenses
+        print(f"  [{step}] FACB {num} (TC {tc:g})")
+        add_pdf(writer, fp_fn(fname))
+        step += 1
+
+        # 6b. BNA de este TC (si es distinto al ya insertado con Agency Fee)
+        bna_this = _bna_for_tc(tc)
+        if bna_this and bna_this not in bnas_used:
+            print(f"  [{step}] BNA (TC {tc:g})")
+            add_pdf(writer, fp_fn(bna_this))
+            bnas_used.add(bna_this)
+            step += 1
+
+        # 6c. Vouchers y comprobantes de este TC, en el orden de la FACB
+        port_v = port.replace(" Port", "").replace(" port", "")
+        for entry in entries_by_tc.get(tc, []):
+            concept = entry["concept"]
+            amount  = entry["amount"]
+            display = concept
+            if concept in ("TOLL DUES (AGP)", "TOLL DUES (CARP)"):
+                display = "TOLL DUES"
+            print(f"  [{step}] Voucher: {display} (TC {tc:g})")
+            for pg in make_voucher(display, amount, tc,
+                                   vessel, sailed, port_v).pages:
+                writer.add_page(pg)
+            step += 1
+            for (inv_fname, pages) in entry.get("invoices", []):
+                full = fp_fn(inv_fname)
+                if os.path.exists(full):
+                    n = add_pdf(writer, full, pages)
+                    print(f"    + {inv_fname} ({n} pgs)")
+                else:
+                    print(f"    ⚠ {inv_fname}")
 
     with open(output_path, "wb") as f:
         writer.write(f)
@@ -671,46 +661,3 @@ def build_fda(analysis, work_dir, output_path, advance, date):
         "vessel":    vessel,
         "client":    client,
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
