@@ -490,18 +490,32 @@ def build_fda(analysis, work_dir, output_path, advance, date):
     # Construir line_amounts
     line_amounts = normalize_line_amounts_with_tc(analysis, work_dir)
 
-    # Reordenar tc_groups para la inserción: agency → ncb → port_expenses
     def _is_ncb(lbl):
         ll = lbl.lower()
         return any(k in ll for k in ("crédito","credito","ncb","credit note","nota de cr"))
 
+    # ── Reordenar tc_groups: NCB → Agency → Port_expenses (orden del modelo correcto)
     for tc in tc_groups:
         rows     = tc_groups[tc]
-        agency   = [(n,l,a) for (n,l,a) in rows if "agency" in l.lower()]
         ncbs     = [(n,l,a) for (n,l,a) in rows if _is_ncb(l)]
+        agency   = [(n,l,a) for (n,l,a) in rows if "agency" in l.lower()]
         port_exp = [(n,l,a) for (n,l,a) in rows
                     if not _is_ncb(l) and "agency" not in l.lower()]
-        tc_groups[tc] = agency + ncbs + port_exp
+        tc_groups[tc] = ncbs + agency + port_exp
+
+    # ── Construir mapa TC → [archivos a insertar ANTES del primer voucher de ese TC]
+    # Regla: TODAS las FACBs/NCBs de un TC van antes del PRIMER voucher de ese TC.
+    # NO hay inserción parcial ni en dos pasos.
+    tc_base = min(tc_groups.keys()) if tc_groups else None
+
+    def _facb_block_for_tc(tc):
+        """Retorna lista de (fname) a insertar para el bloque TC."""
+        block = []
+        for (num, lbl, amt) in tc_groups.get(tc, []):
+            fname = facb_files.get(num)
+            if fname and os.path.exists(fp_fn(fname)):
+                block.append((num, lbl, fname))
+        return block
 
     # ── 1. Sumario ────────────────────────────────────────────────────────
     print("  [1] Sumario...")
@@ -511,7 +525,7 @@ def build_fda(analysis, work_dir, output_path, advance, date):
     )
     for pg in make_summary(
         vessel, port, sailed, date, client,
-        advance, tc_groups_summary, bank_info   # ← copia, no muta
+        advance, tc_groups_summary, bank_info
     ).pages:
         writer.add_page(pg)
 
@@ -526,77 +540,37 @@ def build_fda(analysis, work_dir, output_path, advance, date):
     _is_bb      = "BAHIA BLANCA" in _port_upper or "BAHÍA BLANCA" in _port_upper
 
     if analysis["bna"] and _is_bb:
-        print("  [3] BNA...")
+        print("  [3] BNA TC base...")
         add_pdf(writer, fp_fn(analysis["bna"]))
 
     # ── 4+. Vouchers y FACBs ─────────────────────────────────────────────
-    invoice_map  = port_config.build_invoice_map(analysis, work_dir, line_amounts)
-    tc_inserted  = set()         # TCs cuyo bloque FACB ya se insertó
-    tc_base      = min(tc_groups.keys()) if tc_groups else None
-    step         = 4
+    invoice_map = port_config.build_invoice_map(analysis, work_dir, line_amounts)
+    tc_inserted = set()   # TCs cuyo bloque FACB ya fue insertado (nunca se repite)
+    step        = 4
 
     for entry in invoice_map:
         tc      = entry["tc"]
         concept = entry["concept"]
 
-        # Insertar bloque FACB del TC antes del primer voucher de ese TC
+        # ── Insertar bloque FACB del TC — exactamente UNA VEZ por TC
         if tc not in tc_inserted and tc in tc_groups:
-            # Para el TC base: solo agency + ncb antes de Agency Fee voucher
-            # port_expenses del TC base van antes del PRIMER voucher NO-agency
-            if tc == tc_base and concept == "AGENCY FEE":
-                # Solo agency y ncb del TC base
-                for (num, lbl, amt) in tc_groups[tc]:
-                    if "port" in lbl.lower() and "agency" not in lbl.lower() \
-                            and not _is_ncb(lbl):
-                        continue
-                    fname = facb_files.get(num)
-                    if fname and os.path.exists(fp_fn(fname)):
-                        print(f"  [{step}] FACB {num} — {lbl} (TC {tc:g})")
-                        add_pdf(writer, fp_fn(fname))
-                        step += 1
-                # Marcar TC base como parcialmente insertado usando bandera especial
-                tc_inserted.add(f"{tc}_agency_ncb")
 
-            elif tc == tc_base and f"{tc}_agency_ncb" in tc_inserted \
-                    and tc not in tc_inserted:
-                # Primer voucher distinto a Agency Fee del TC base → insertar port_expenses
-                for (num, lbl, amt) in tc_groups[tc]:
-                    lbl_l = lbl.lower()
-                    if "agency" in lbl_l or _is_ncb(lbl):
-                        continue
-                    fname = facb_files.get(num)
-                    if fname and os.path.exists(fp_fn(fname)):
-                        print(f"  [{step}] FACB {num} — {lbl} (TC {tc:g}, port_exp)")
-                        add_pdf(writer, fp_fn(fname))
+            # BNA extra para TCs distintos al base (solo Bahia Blanca)
+            if _is_bb and tc != tc_base:
+                for bna_extra in analysis.get("bna_extra", []):
+                    bna_tc = _get_bna_tc(fp_fn(bna_extra))
+                    if bna_tc and abs(bna_tc - tc) < 1:
+                        print(f"  [{step}] BNA TC {tc:g}")
+                        add_pdf(writer, fp_fn(bna_extra))
                         step += 1
-                tc_inserted.add(tc)
 
-            elif tc != tc_base and tc not in tc_inserted:
-                # TC distinto al base: BNA extra (solo BB) + todas las FACBs del TC
-                if _is_bb:
-                    for bna_extra in analysis.get("bna_extra", []):
-                        bna_tc = _get_bna_tc(fp_fn(bna_extra))
-                        if bna_tc and abs(bna_tc - tc) < 1:
-                            print(f"  [{step}] BNA extra TC {tc:g}")
-                            add_pdf(writer, fp_fn(bna_extra))
-                            step += 1
-                for (num, lbl, amt) in tc_groups[tc]:
-                    fname = facb_files.get(num)
-                    if fname and os.path.exists(fp_fn(fname)):
-                        print(f"  [{step}] FACB {num} — {lbl} (TC {tc:g})")
-                        add_pdf(writer, fp_fn(fname))
-                        step += 1
-                tc_inserted.add(tc)
+            # Insertar todas las FACBs/NCBs de este TC (ya ordenadas: NCB→Agency→Port)
+            for (num, lbl, fname) in _facb_block_for_tc(tc):
+                print(f"  [{step}] FACB {num} — {lbl} (TC {tc:g})")
+                add_pdf(writer, fp_fn(fname))
+                step += 1
 
-        # Guard: si el TC base nunca tuvo Agency Fee (edge case) → insertar todo
-        if tc == tc_base and tc not in tc_inserted:
-            for (num, lbl, amt) in tc_groups[tc]:
-                fname = facb_files.get(num)
-                if fname and os.path.exists(fp_fn(fname)):
-                    print(f"  [{step}] FACB {num} — {lbl} (TC {tc:g}, fallback)")
-                    add_pdf(writer, fp_fn(fname))
-                    step += 1
-            tc_inserted.add(tc)
+            tc_inserted.add(tc)  # marcar TC como insertado — nunca más se toca
 
         # Voucher
         amount          = entry["amount"]
