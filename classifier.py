@@ -502,6 +502,9 @@ MARITIME_PAGE_RULES = [
     ("skip",             ["DISBURSEMENT ACCOUNT"]),
     ("skip",             ["Cotizaciones históricas", "Dolar U.S.A"]),
     ("skip",             ["Banco de la Naci", "Cotizaciones"]),
+    # SERVICE CERTIFICATE de MSA — nunca aparece en el FDA
+    ("skip",             ["SERVICE CERTIFICATE"]),
+    ("skip",             ["CERTIFICATE OF SERVICE"]),
 
     # ── Headclerk ─────────────────────────────────────────────────────────
     ("headclerk_break",  ["HEAD CLERK", "Breakdown"]),
@@ -533,16 +536,27 @@ MARITIME_PAGE_RULES = [
     ("migraciones_liq",  ["Migraciones", "Liquidaci"]),
     ("migraciones_sol",  ["Servicios Marítimos y Fluviales", "Solicitud de Servicio"]),
 
-    # ── Orden de transporte — SENASA va a Garbage, Migration va a Migration
+    # ── Orden de transporte ───────────────────────────────────────────────
+    # SENASA → Garbage
     ("orden_transporte_senasa", ["ORDEN DE TRANSPORTE", "SE.NA.SA"]),
     ("orden_transporte_senasa", ["ORDEN DE TRANSPORTE", "SENASA OFFICE"]),
-    ("orden_transporte",        ["ORDEN DE TRANSPORTE"]),
+    # Libre Plática (Sanidad) → Sanitary — debe ir ANTES que el genérico de migración
+    ("orden_transporte_sanidad", ["ORDEN DE TRANSPORTE", "LIBRE PLATIC"]),
+    ("orden_transporte_sanidad", ["ORDEN DE TRANSPORTE", "FREE PRATIC"]),
+    ("orden_transporte_sanidad", ["ORDEN DE TRANSPORTE", "PRATIQUE"]),
+    # Migración → genérico
+    ("orden_transporte",         ["ORDEN DE TRANSPORTE"]),
 
     # ── Sanitary / Free Pratique ─────────────────────────────────────────
+    # Certificado oficial: "República Argentina - Poder Ejecutivo Nacional"
+    ("sanidad_cert",     ["República Argentina", "Certificado de Libre"]),
+    ("sanidad_cert",     ["PODER EJECUTIVO NACIONAL", "LIBRE PL"]),
     ("sanidad_cert",     ["Certificado de Libre Plática"]),
     ("sanidad_cert",     ["CERTIFICADO DE LIBRE PLÁTICA"]),
     ("sanidad_cert",     ["Libre Plática"]),
     ("sanidad_cert",     ["Certificado de Libre"]),
+    ("sanidad_cert",     ["FREE PRACTIQUE"]),          # recibo/certificado
+    ("sanidad_cert",     ["COMPULSORY SANITARY DUES"]),
     ("sanidad_eval",     ["EVALUACIÓN DE RIESGOS"]),
     ("sanidad_eval",     ["Evaluación de Libre Plática"]),
     ("sanidad_transf",   ["MINISTERIO DE SALUD", "COMPULSORY SANITARY"]),
@@ -554,7 +568,7 @@ MARITIME_PAGE_RULES = [
     ("senasa",           ["BOLETA DE PAGO", "Barreras Sanitarias"]),
     ("senasa",           ["Barreras Sanitarias", "BOLETA"]),
     ("senasa",           ["Barreras Sanitarias", "ARANCEL"]),
-    ("senasa",           ["Barreras Sanitarias", "Regional"]),  # variante con BOLETA ARANCEL
+    ("senasa",           ["Barreras Sanitarias", "Regional"]),
 
     # ── Mandatory Holds ───────────────────────────────────────────────────
     ("compulsory_insp",  ["COMPULSORY INSPECTION BY PRIVATE SURVEYORS"]),
@@ -603,6 +617,7 @@ PAGE_TO_VOUCHER = {
     "migraciones_liq":       "MIGRATION EXPENSES",
     "migraciones_sol":       "MIGRATION EXPENSES",
     "orden_transporte":      "MIGRATION EXPENSES",
+    "orden_transporte_sanidad": "SANITARY DUES AND FREE PRATIQUE",
     "orden_transporte_senasa":"GARBAGE COMPULSORY INSPECTION",
     "sanidad_cert":          "SANITARY DUES AND FREE PRATIQUE",
     "sanidad_eval":          "SANITARY DUES AND FREE PRATIQUE",
@@ -721,6 +736,12 @@ def classify_maritime_pages(pdf_path):
                 cat = "coast_guard"
             elif "PERMANENCIA ADUANERA" in tu:
                 cat = "se_permanencia"
+            elif any(k in tu for k in ("LIBRE PLATIC", "FREE PRATIC", "PRATIQUE",
+                                        "COMPULSORY SANITARY", "PODER EJECUTIVO NACIONAL")):
+                cat = "sanidad_cert"
+            # Service Certificate nunca va en FDA
+            elif "SERVICE CERTIFICATE" in tu or "CERTIFICATE OF SERVICE" in tu:
+                cat = "skip"
 
         # Excluir VOUCHER INTERNO de compulsory (recibo ISA, no factura inspector)
         if cat == "compulsory_insp" and "VOUCHER" in text.upper() and \
@@ -736,12 +757,16 @@ def classify_maritime_pages(pdf_path):
             else:
                 seen_lman.add(ref)
 
-        # skip_dup con SENASA → rescatar como senasa
+        # skip_dup con contenido útil → rescatar
         if cat == "skip_dup" and text.strip():
             tu2 = text.upper()
             if any(k in tu2 for k in ("BARRERAS SANITARIAS", "COORDINACION GENERAL",
-                                       "COORDINACIÓN GENERAL")):
+                                       "COORDINACIÓN GENERAL", "BOLETA REQUERIDO",
+                                       "BOLETA ARANCEL")):
                 cat = "senasa"
+            elif any(k in tu2 for k in ("LIBRE PLATIC", "FREE PRATIC", "PRATIQUE",
+                                         "COMPULSORY SANITARY")):
+                cat = "sanidad_cert"
 
         voucher = PAGE_TO_VOUCHER.get(cat, None)
         result.append({"page": i, "category": cat, "voucher": voucher})
