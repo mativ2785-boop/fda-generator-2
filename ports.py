@@ -81,6 +81,50 @@ CONCEPT_ALIASES = {
 }
 
 
+
+def _normalize_concept_with_context(raw_concept, tc, tc_base, analysis):
+    """
+    Normaliza el concepto de la FACB al nombre canónico del voucher,
+    teniendo en cuenta el TC y el contexto del análisis.
+
+    Reglas contextuales:
+    - RIVER PLATE PILOTAGE en TC != base Y hay Glatil → PILOT LAUNCH
+      (la FACB agrupa bajo ese nombre el costo del servicio de lancha)
+    - TOLL DUES con comprobante CARP → TOLL DUES (CARP)
+    - TOLL DUES con comprobante AGP  → TOLL DUES (AGP)
+    - Si hay ambos CARP y AGP: el TC más bajo → AGP, el más alto → CARP
+    """
+    concept = normalize_concept(raw_concept)
+
+    # RIVER PLATE PILOTAGE en TC alto con Glatil disponible → PILOT LAUNCH
+    if (concept == "RIVER PLATE PILOTAGE"
+            and tc > tc_base
+            and analysis.get("glatil")):
+        concept = "PILOT LAUNCH TRANSPORTATION RIVER PLATE"
+
+    # TOLL DUES → distinguir AGP vs CARP
+    if concept == "TOLL DUES":
+        has_agp  = bool(analysis.get("agp"))
+        has_carp = bool(analysis.get("carp"))
+        if has_agp and has_carp:
+            # Determinar qué TC corresponde a cada uno leyendo las FACBs
+            # Por convención ISA: el TC más bajo → AGP, el más alto → CARP
+            toll_tcs = sorted(
+                f["tc"] for f in analysis.get("facbs", [])
+                if f.get("type") == "port_expenses" and f.get("tc")
+            )
+            if toll_tcs and tc == min(toll_tcs):
+                concept = "TOLL DUES (AGP)"
+            else:
+                concept = "TOLL DUES (CARP)"
+        elif has_agp:
+            concept = "TOLL DUES (AGP)"
+        elif has_carp:
+            concept = "TOLL DUES (CARP)"
+
+    return concept
+
+
 def normalize_concept(raw):
     """Normaliza el nombre del concepto de la FACB al nombre canónico del voucher."""
     k = raw.upper().strip().replace("PRACTIQUE", "PRATIQUE")
@@ -330,6 +374,9 @@ class SanLorenzoPort(PortBase):
             key=lambda f: -f["tc"]   # descendente
         )
 
+        # TC base = el TC más bajo de las FACBs port_expenses
+        tc_base = min((f["tc"] for f in facbs_sorted), default=0)
+
         result = []
 
         for facb in facbs_sorted:
@@ -344,7 +391,10 @@ class SanLorenzoPort(PortBase):
                 if amount <= 0:
                     continue
 
-                concept = normalize_concept(raw_concept)
+                # Normalización contextual: usa tc, tc_base y analysis
+                concept = _normalize_concept_with_context(
+                    raw_concept, tc, tc_base, analysis
+                )
 
                 # AGENCY FEE: no genera voucher en el cuerpo
                 if "AGENCY FEE" in concept:
@@ -384,6 +434,7 @@ class BahiaBlancaPort(PortBase):
             key=lambda f: -f["tc"]
         )
 
+        tc_base = min((f["tc"] for f in facbs_sorted), default=0)
         result = []
         for facb in facbs_sorted:
             tc    = facb["tc"]
@@ -394,7 +445,9 @@ class BahiaBlancaPort(PortBase):
             for raw_concept, amount in la.items():
                 if amount <= 0:
                     continue
-                concept = normalize_concept(raw_concept)
+                concept = _normalize_concept_with_context(
+                    raw_concept, tc, tc_base, analysis
+                )
                 if "AGENCY FEE" in concept:
                     continue
                 invoices = _get_invoices_for_concept(
@@ -428,6 +481,7 @@ class NecocheaPort(PortBase):
             key=lambda f: -f["tc"]
         )
 
+        tc_base = min((f["tc"] for f in facbs_sorted), default=0)
         result = []
         for facb in facbs_sorted:
             tc    = facb["tc"]
@@ -438,7 +492,9 @@ class NecocheaPort(PortBase):
             for raw_concept, amount in la.items():
                 if amount <= 0:
                     continue
-                concept = normalize_concept(raw_concept)
+                concept = _normalize_concept_with_context(
+                    raw_concept, tc, tc_base, analysis
+                )
                 if "AGENCY FEE" in concept:
                     continue
                 invoices = _get_invoices_for_concept(
