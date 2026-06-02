@@ -186,7 +186,54 @@ def _only_original(fname, work_dir):
         return None
 
 
-def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
+def _dedup_by_invoice_number(file_list, work_dir):
+    """
+    Dado una lista de (fname, pages), elimina duplicados basándose en el número de factura.
+    Para archivos con DUPLICADO/TRIPLICADO en el texto: solo incluye ORIGINAL (page 0 o el único).
+    Para múltiples archivos con el mismo número de factura: incluye solo el primero.
+    """
+    import fitz as _fz
+    import re as _re
+
+    seen_numbers = set()
+    result = []
+
+    for fname, pages in file_list:
+        fpath = os.path.join(work_dir, fname)
+        try:
+            doc = _fz.open(fpath)
+            text_all = "".join(pg.get_text() for pg in doc).upper()
+
+            # Extraer número de factura del texto
+            # Patrones: "B-00006-00012741", "Cód 201-00006-00012741", "0001-00000242", etc.
+            num_match = _re.search(
+                r'(?:CÓD|COD|NRO|N°|Nro\.?)\s*[\s:]*([\w][\w\-/]+[\d]{4,})'
+                r'|(\d{4}-\d{4,})'
+                r'|(B-\d{5}-\d{6,})'
+                r'|(\d{3}-\d{5}-\d{5,})',
+                doc[0].get_text(), _re.IGNORECASE
+            )
+            inv_num = None
+            if num_match:
+                inv_num = next(g for g in num_match.groups() if g)
+
+            # Si tiene DUPLICADO/TRIPLICADO → incluir solo p0
+            if "DUPLICADO" in text_all or "TRIPLICADO" in text_all:
+                pages = [0]
+
+            # Deduplicar por número de factura
+            if inv_num:
+                # Normalizar: quitar guiones, espacios
+                inv_key = _re.sub(r'[\s\-]', '', inv_num).upper()
+                if inv_key in seen_numbers:
+                    continue   # ya incluido → saltar
+                seen_numbers.add(inv_key)
+
+            result.append((fname, pages))
+        except Exception:
+            result.append((fname, pages))  # en caso de error, incluir tal cual
+
+    return result
     """Retorna [(filename, pages_or_None)] para el comprobante del concepto."""
     c = concept_canonical
 
@@ -244,36 +291,42 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
         return [(r["filename"], [0]) for r in analysis.get("practicaje_rp", [])
                 if r.get("has_maniobra") and r.get("maniobra_amount", 0) > 0]
 
-    # RIVER PARANA PILOTAGE → todos los Multipar/COPRAC — solo ORIGINAL
+    # RIVER PARANA PILOTAGE → todos los Multipar/COPRAC — deduplicado por nro factura
     if c == "RIVER PARANA PILOTAGE":
-        return [(r["filename"], _only_original(r["filename"], work_dir))
-                for r in analysis.get("coprac", [])]
+        raw = [(r["filename"], _only_original(r["filename"], work_dir))
+               for r in analysis.get("coprac", [])]
+        return _dedup_by_invoice_number(raw, work_dir)
 
     if c == "RIVER PARANA PILOTAGE (DELAY)":
-        return [(r["filename"], _only_original(r["filename"], work_dir))
-                for r in analysis.get("coprac", [])
-                if r.get("has_demora")]
+        raw = [(r["filename"], _only_original(r["filename"], work_dir))
+               for r in analysis.get("coprac", [])
+               if r.get("has_demora")]
+        return _dedup_by_invoice_number(raw, work_dir)
 
     if c == "RIVER PARANA PILOTAGE ANCHORAGE MANEUVER":
-        return [(r["filename"], _only_original(r["filename"], work_dir))
-                for r in analysis.get("coprac", [])
-                if r.get("has_maniobra") and r.get("maniobra_amount", 0) > 0]
+        raw = [(r["filename"], _only_original(r["filename"], work_dir))
+               for r in analysis.get("coprac", [])
+               if r.get("has_maniobra") and r.get("maniobra_amount", 0) > 0]
+        return _dedup_by_invoice_number(raw, work_dir)
 
-    # PORT PILOTAGE → Coop Practicos del Parana — solo ORIGINAL
+    # PORT PILOTAGE → Coop Practicos del Parana — deduplicado
     if c == "PORT PILOTAGE":
-        return [(r["filename"], _only_original(r["filename"], work_dir))
-                for r in analysis.get("rosario_pilots", [])]
+        raw = [(r["filename"], _only_original(r["filename"], work_dir))
+               for r in analysis.get("rosario_pilots", [])]
+        return _dedup_by_invoice_number(raw, work_dir)
 
     if c == "PORT PILOTAGE (DELAY)":
-        return [(r["filename"], _only_original(r["filename"], work_dir))
-                for r in analysis.get("rosario_pilots", [])
-                if r.get("has_demora")]
+        raw = [(r["filename"], _only_original(r["filename"], work_dir))
+               for r in analysis.get("rosario_pilots", [])
+               if r.get("has_demora")]
+        return _dedup_by_invoice_number(raw, work_dir)
 
-    # LAUNCH SERVICES FOR CLEARANCE → facturas con is_clearance=True — solo ORIGINAL
+    # LAUNCH SERVICES FOR CLEARANCE → facturas con is_clearance=True — deduplicado
     if "LAUNCH SERVICES" in c and "ZONA" not in c:
-        return [(r["filename"], _only_original(r["filename"], work_dir))
-                for r in analysis.get("amarre_coral", [])
-                if r.get("is_clearance")]
+        raw = [(r["filename"], _only_original(r["filename"], work_dir))
+               for r in analysis.get("amarre_coral", [])
+               if r.get("is_clearance")]
+        return _dedup_by_invoice_number(raw, work_dir)
 
     # LAUNCH SERVICES AT ZONA COMUN
     if "ZONA COMUN" in c:
@@ -281,13 +334,13 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
                 for r in analysis.get("amarre_coral", [])
                 if "LANCHAS DEL ESTE" in r["filename"].upper()]
 
-    # MOORING & UNMOORING → facturas con is_mooring=True — solo ORIGINAL
+    # MOORING & UNMOORING → facturas con is_mooring=True — deduplicado
     if "MOORING" in c and "ANCHORAGE" not in c:
-        inv  = [(r["filename"], _only_original(r["filename"], work_dir))
+        raw  = [(r["filename"], _only_original(r["filename"], work_dir))
                 for r in analysis.get("amarre_coral", [])
                 if r.get("is_mooring")]
-        inv += mar_pages.get("MOORING & UNMOORING SERVICES", [])
-        return inv
+        raw += mar_pages.get("MOORING & UNMOORING SERVICES", [])
+        return _dedup_by_invoice_number(raw, work_dir)
 
     # CUSTOM HOUSE EXPENSES → Centro Nav + Maritime AFIP/SSEE
     if c == "CUSTOM HOUSE EXPENSES":
