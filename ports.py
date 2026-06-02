@@ -166,6 +166,26 @@ def _normalize_concept_with_context(raw_concept, tc, tc_base, analysis):
 # MAPEADOR CONCEPTO → COMPROBANTE DE PROVEEDOR
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _only_original(fname, work_dir):
+    """
+    Para archivos de proveedores con múltiples páginas (ORIGINAL + DUPLICADO/TRIPLICADO),
+    retorna solo la primera página (ORIGINAL).
+    Para archivos de 1 página, retorna None (todas las páginas = la única).
+    """
+    try:
+        import fitz as _fz
+        doc = _fz.open(os.path.join(work_dir, fname))
+        if doc.page_count <= 1:
+            return None   # 1 página → incluir completo
+        # Verificar si tiene DUPLICADO/TRIPLICADO — si sí, solo p1
+        text_all = "".join(pg.get_text() for pg in doc).upper()
+        if "DUPLICADO" in text_all or "TRIPLICADO" in text_all:
+            return [0]    # solo la primera página (ORIGINAL)
+        return None       # múltiples páginas pero sin duplicado → incluir todo
+    except Exception:
+        return None
+
+
 def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
     """Retorna [(filename, pages_or_None)] para el comprobante del concepto."""
     c = concept_canonical
@@ -206,13 +226,13 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
 
     # PORT DUES → terminal portuario
     if c == "PORT DUES":
-        return [(f, None) for f in analysis.get("terminal_portuario", [])]
+        return [(f, _only_original(f, work_dir)) for f in analysis.get("terminal_portuario", [])]
 
     # ENTRANCE AND LIGHT DUES → ENAPRO de Maritime
     if c == "ENTRANCE AND LIGHT DUES":
         return mar_pages.get("ENTRANCE AND LIGHT DUES", [])
 
-    # RIVER PLATE PILOTAGE → Ripla, solo p1
+    # RIVER PLATE PILOTAGE → Ripla, solo p1 (excluir voucher interno)
     if c == "RIVER PLATE PILOTAGE":
         return [(r["filename"], [0]) for r in analysis.get("practicaje_rp", [])]
 
@@ -224,39 +244,47 @@ def _get_invoices_for_concept(concept_canonical, analysis, work_dir, mar_pages):
         return [(r["filename"], [0]) for r in analysis.get("practicaje_rp", [])
                 if r.get("has_maniobra") and r.get("maniobra_amount", 0) > 0]
 
-    # RIVER PARANA PILOTAGE → todos los Multipar/COPRAC
+    # RIVER PARANA PILOTAGE → todos los Multipar/COPRAC — solo ORIGINAL
     if c == "RIVER PARANA PILOTAGE":
-        return [(r["filename"], None) for r in analysis.get("coprac", [])]
+        return [(r["filename"], _only_original(r["filename"], work_dir))
+                for r in analysis.get("coprac", [])]
 
     if c == "RIVER PARANA PILOTAGE (DELAY)":
-        return [(r["filename"], None) for r in analysis.get("coprac", [])
+        return [(r["filename"], _only_original(r["filename"], work_dir))
+                for r in analysis.get("coprac", [])
                 if r.get("has_demora")]
 
     if c == "RIVER PARANA PILOTAGE ANCHORAGE MANEUVER":
-        return [(r["filename"], None) for r in analysis.get("coprac", [])
+        return [(r["filename"], _only_original(r["filename"], work_dir))
+                for r in analysis.get("coprac", [])
                 if r.get("has_maniobra") and r.get("maniobra_amount", 0) > 0]
 
-    # PORT PILOTAGE → Coop Practicos del Parana
+    # PORT PILOTAGE → Coop Practicos del Parana — solo ORIGINAL
     if c == "PORT PILOTAGE":
-        return [(r["filename"], None) for r in analysis.get("rosario_pilots", [])]
+        return [(r["filename"], _only_original(r["filename"], work_dir))
+                for r in analysis.get("rosario_pilots", [])]
 
     if c == "PORT PILOTAGE (DELAY)":
-        return [(r["filename"], None) for r in analysis.get("rosario_pilots", [])
+        return [(r["filename"], _only_original(r["filename"], work_dir))
+                for r in analysis.get("rosario_pilots", [])
                 if r.get("has_demora")]
 
-    # LAUNCH SERVICES FOR CLEARANCE → facturas con is_clearance=True
+    # LAUNCH SERVICES FOR CLEARANCE → facturas con is_clearance=True — solo ORIGINAL
     if "LAUNCH SERVICES" in c and "ZONA" not in c:
-        return [(r["filename"], None) for r in analysis.get("amarre_coral", [])
+        return [(r["filename"], _only_original(r["filename"], work_dir))
+                for r in analysis.get("amarre_coral", [])
                 if r.get("is_clearance")]
 
     # LAUNCH SERVICES AT ZONA COMUN
     if "ZONA COMUN" in c:
-        return [(r["filename"], None) for r in analysis.get("amarre_coral", [])
+        return [(r["filename"], _only_original(r["filename"], work_dir))
+                for r in analysis.get("amarre_coral", [])
                 if "LANCHAS DEL ESTE" in r["filename"].upper()]
 
-    # MOORING & UNMOORING → facturas con is_mooring=True
+    # MOORING & UNMOORING → facturas con is_mooring=True — solo ORIGINAL
     if "MOORING" in c and "ANCHORAGE" not in c:
-        inv  = [(r["filename"], None) for r in analysis.get("amarre_coral", [])
+        inv  = [(r["filename"], _only_original(r["filename"], work_dir))
+                for r in analysis.get("amarre_coral", [])
                 if r.get("is_mooring")]
         inv += mar_pages.get("MOORING & UNMOORING SERVICES", [])
         return inv
