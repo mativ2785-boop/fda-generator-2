@@ -519,9 +519,17 @@ def build_fda(analysis, work_dir, output_path, advance, date):
             port_facbs.append((num, fname, tc))
 
     # NCBs: orden TC descendente
-    ncb_facbs.sort(key=lambda x: -x[2])
-    # Port expenses: orden TC descendente (los TCs altos van primero en el FDA)
-    port_facbs.sort(key=lambda x: -x[2])
+    ncb_facbs.sort(key=lambda x: -x[2])  # NCBs: TC descendente
+
+    # Port expenses: ordenar por contenido usando la misma lógica que ports.py
+    # grupo 0 = gastos de puerto base, grupo 1 = CARP/Pilot, grupo 2 = AGP
+    def _port_sort(item):
+        num, fname, tc = item
+        from ports import _facb_sort_key
+        return _facb_sort_key({"number": num, "filename": fname, "tc": tc,
+                                "_fpath": fp_fn(fname)}, analysis)
+
+    port_facbs.sort(key=_port_sort)
 
     # TC de la FACB Agency Fee (para el BNA inicial)
     tc_agency = agency_facbs[0][2] if agency_facbs else (
