@@ -719,10 +719,20 @@ def classify_maritime_pages(pdf_path):
     for i in range(n):
         text = read_page(pdf_path, i)
 
-        # Saltar páginas de DUPLICADO/TRIPLICADO
+        # Saltar páginas de DUPLICADO/TRIPLICADO — PERO primero verificar si
+        # es una página de contenido útil (SENASA/Barreras Sanitarias) que
+        # coincide con is_duplicate_page por alguna falsa coincidencia.
         if is_duplicate_page(text):
-            result.append({"page": i, "category": "skip_dup", "voucher": None})
-            continue
+            text_up_dup = text.upper()
+            # Rescatar páginas SENASA aunque is_duplicate_page las marque
+            if any(k in text_up_dup for k in ("BARRERAS SANITARIAS", "BOLETA REQUERIDO",
+                                               "BOLETA ARANCEL", "COORDINACION GENERAL",
+                                               "COORDINACIÓN GENERAL")):
+                # Procesar normalmente — no saltar
+                pass
+            else:
+                result.append({"page": i, "category": "skip_dup", "voucher": None})
+                continue
 
         if is_image_page(pdf_path, i):
             category = _classify_image_page_deterministic(pdf_path, i)
@@ -1040,7 +1050,13 @@ def analyze(work_dir):
                 ("BOAT SERVICE EMBARKING"             in _text) or
                 ("BOAT SERVICE DISEMBARKING"          in _text) or
                 ("PEOPLE FOR EMBARKING"               in _text) or
-                ("PEOPLE FOR DISEMBARKING"            in _text)
+                ("PEOPLE FOR DISEMBARKING"            in _text) or
+                # Amarre Coral formato: "Boat service at roads for inward/outward"
+                ("BOAT SERVICE AT ROADS FOR INWARD"   in _text) or
+                ("BOAT SERVICE AT ROADS FOR OUTWARD"  in _text) or
+                ("AT ROADS FOR INWARD"                in _text) or
+                ("AT ROADS FOR OUTWARD"               in _text) or
+                ("BOAT SERVICE AT ROAD"               in _text)
             )
             is_mooring = (
                 "MOORING"   in _text or
